@@ -37,69 +37,73 @@ pipeline {
 ------------------------- */
         stage("Ensure SSH Service & Firewall") {
             steps {
-                withEnv([
-                    "SSH_PASS_SECRET=${params.SSH_PASS}",
-                    "SSH_USER=${params.SSH_USER}",
-                    "TARGET_IP=${params.TARGET_IP}"
-                ]) {
         
-                    sh '''
-                        sshpass -p "$SSH_PASS_SECRET" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP bash -s << 'EOF'
+                withCredentials([password(credentialsId: 'SSH_PASS_ID', variable: 'SSH_PASS_SECRET')]) {
         
-                            echo "🔐 Checking SSH service..."
+                    script {
         
-                            # --- Detect Linux ---
-                            if command -v uname >/dev/null 2>&1; then
-                                OS_CHECK=$(uname | tr "[:upper:]" "[:lower:]")
+                        echo "Checking remote OS..."
         
-                                if [[ "$OS_CHECK" == "linux" ]]; then
-                                    echo "🟢 Linux detected — configuring SSH..."
+                        def osType = sh(
+                            returnStdout: true,
+                            script: '''
+                                sshpass -p "$SSH_PASS_SECRET" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP "uname 2>/dev/null" || true
+                            '''
+                        ).trim().toLowerCase()
         
-                                    # Install SSH server if missing
-                                    if ! command -v sshd >/dev/null 2>&1; then
-                                        echo "🔧 Installing OpenSSH server..."
+                        if (osType.contains("linux")) {
+        
+                            echo "Remote OS = Linux"
+        
+                            sh '''
+                                sshpass -p "$SSH_PASS_SECRET" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP bash -s << "EOF"
+                                    echo "🔐 Enabling SSH on Linux..."
+        
+                                    if ! command -v sshd >/dev/null; then
+                                        echo "Installing OpenSSH server..."
                                         apt-get update -y || yum update -y
                                         apt-get install -y openssh-server || yum install -y openssh-server
-                                    else
-                                        echo "✔ SSH server already installed."
                                     fi
         
-                                    # Enable/start SSH
                                     systemctl enable ssh || systemctl enable sshd || true
                                     systemctl start ssh || systemctl start sshd || true
         
-                                    # Firewall
-                                    if command -v ufw >/dev/null 2>&1; then
-                                        echo "🔐 Opening SSH in UFW..."
+                                    if command -v ufw >/dev/null; then
                                         ufw allow ssh || true
-                                    elif command -v firewall-cmd >/dev/null 2>&1; then
-                                        echo "🔐 Opening SSH in firewalld..."
+                                    elif command -v firewall-cmd >/dev/null; then
                                         firewall-cmd --add-service=ssh --permanent || true
                                         firewall-cmd --reload || true
-                                    else
-                                        echo "⚠ No firewall tool detected (UFW/firewalld). Skipping firewall."
                                     fi
-                                fi
-                            fi
         
-                            # --- Detect Windows ---
-                            if powershell -command "Get-Service sshd" >/dev/null 2>&1; then
-                                echo "🟦 Windows detected — configuring SSH..."
+                                    echo "Linux SSH setup complete."
+                                EOF
+                            '''
         
-                                powershell -command "
-                                    Set-Service -Name sshd -StartupType Automatic;
-                                    Start-Service sshd;
-                                    if (!(Get-NetFirewallRule -DisplayName 'OpenSSH-Server-In-TCP')) {
-                                        New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH-Server-In-TCP' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22;
+                        } else {
+        
+                            echo "Remote OS = Windows"
+        
+                            sh '''
+                                sshpass -p "$SSH_PASS_SECRET" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP powershell -Command "
+                                    Write-Host '🔐 Enabling SSH on Windows...';
+        
+                                    if (Get-Service sshd -ErrorAction SilentlyContinue) {
+                                        Set-Service -Name sshd -StartupType Automatic;
+                                        Start-Service sshd;
+        
+                                        if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH-Server-In-TCP')) {
+                                            New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH-Server-In-TCP' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22;
+                                        }
+        
+                                        Write-Host 'SSH setup complete';
+                                    } else {
+                                        Write-Host '⚠ SSHD service missing. Install OpenSSH server manually.';
                                     }
-                                    Write-Host '✔ SSH and firewall configured.';
                                 "
-                            fi
+                            '''
         
-                            echo "SSH configuration complete."
-        
-                        EOF
-                    '''
+                        }
+                    }
                 }
             }
         }
