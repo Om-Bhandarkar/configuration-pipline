@@ -33,36 +33,51 @@ pipeline {
         /* -------------------------
            2) DETECT OS
         ------------------------- */
-        stage("Detect OS") {
-            steps {
-                echo "🔍 Detecting OS..."
-        
-                script {
-                    def output = sh(
-                        returnStdout: true,
-                        script: """
-                            sshpass -p "${params.SSH_PASS}" \
-                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                            "uname 2>/dev/null || powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
-                        """
-                    ).trim()
-        
-                    echo "OS raw output: ${output}"
-        
-                    if (output.toLowerCase().contains("linux")) {
-                        env.OS_TYPE = "linux"
+           stage("Detect OS") {
+                steps {
+                    echo "🔍 Detecting OS..."
+                    script {
+            
+                        // --- Try Linux check first ---
+                        def linuxCheck = sh(
+                            returnStdout: true,
+                            script: """
+                                sshpass -p "${params.SSH_PASS}" \
+                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
+                            """
+                        ).trim()
+            
+                        echo "Linux check output: ${linuxCheck}"
+            
+                        if (linuxCheck.toLowerCase().contains("linux")) {
+                            env.OS_TYPE = "linux"
+                            echo "🖥️ OS Detected: Linux"
+                            return
+                        }
+            
+                        // --- Try Windows check ---
+                        def winCheck = sh(
+                            returnStdout: true,
+                            script: """
+                                sshpass -p "${params.SSH_PASS}" \
+                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                                "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
+                            """
+                        ).trim()
+            
+                        echo "Windows check output: ${winCheck}"
+            
+                        if (winCheck.toLowerCase().contains("win32nt")) {
+                            env.OS_TYPE = "windows"
+                            echo "🖥️ OS Detected: Windows"
+                            return
+                        }
+            
+                        error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
                     }
-                    else if (output.toLowerCase().contains("win32nt") || output.toLowerCase().contains("windows")) {
-                        env.OS_TYPE = "windows"
-                    }
-                    else {
-                        error "❌ Could not detect OS! Raw output: ${output}"
-                    }
-        
-                    echo "🖥️ Detected OS: ${env.OS_TYPE}"
                 }
             }
-        }
+
 
 
         /* -------------------------
