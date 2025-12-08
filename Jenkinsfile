@@ -35,27 +35,35 @@ pipeline {
         ------------------------- */
         stage("Detect OS") {
             steps {
+                echo "🔍 Detecting OS..."
+        
                 script {
-                    def out = sh(
+                    def output = sh(
                         returnStdout: true,
                         script: """
                             sshpass -p "${params.SSH_PASS}" \
-                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname 2>/dev/null || ver"
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                            "uname 2>/dev/null || powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
                         """
                     ).trim()
-
-                    if (out.toLowerCase().contains("linux")) {
+        
+                    echo "OS raw output: ${output}"
+        
+                    if (output.toLowerCase().contains("linux")) {
                         env.OS_TYPE = "linux"
-                    } else if (out.toLowerCase().contains("windows") || out.toLowerCase().contains("microsoft")) {
-                        env.OS_TYPE = "windows"
-                    } else {
-                        error "Unknown OS detected: ${out}"
                     }
-
-                    echo "Detected OS: ${env.OS_TYPE}"
+                    else if (output.toLowerCase().contains("win32nt") || output.toLowerCase().contains("windows")) {
+                        env.OS_TYPE = "windows"
+                    }
+                    else {
+                        error "❌ Could not detect OS! Raw output: ${output}"
+                    }
+        
+                    echo "🖥️ Detected OS: ${env.OS_TYPE}"
                 }
             }
         }
+
 
         /* -------------------------
            3) INSTALL DOCKER (LINUX)
