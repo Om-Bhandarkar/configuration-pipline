@@ -79,7 +79,7 @@ pipeline {
         }
 
         /* -------------------------------------------
-           2.5) CHECK DOCKER, COMPOSE, POSTGRES, REDIS
+           2.5) CHECK DOCKER, COMPOSE, POSTGRES, REDIS (LINUX)
         ------------------------------------------- */
         stage("Check Docker & Services (Linux)") {
             when { expression { env.OS_TYPE == "linux" } }
@@ -126,6 +126,47 @@ pipeline {
             }
         }
 
+        /* -------------------------------------------
+           2.6) CHECK DOCKER, COMPOSE, POSTGRES, REDIS (WINDOWS)
+        ------------------------------------------- */
+        stage("Check Docker & Services (Windows)") {
+            when { expression { env.OS_TYPE == "windows" } }
+            steps {
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "
+                        
+                        Write-Host 'Checking Docker...'
+                        if (!(docker --version)) {
+                            Write-Host '❌ Docker not installed. Please install Docker Desktop manually.';
+                        } else {
+                            Write-Host '✔ Docker installed.';
+                        }
+
+                        Write-Host 'Checking Docker Compose...'
+                        if (!(docker compose version)) {
+                            Write-Host '❌ Docker Compose not installed. Install Docker Desktop.';
+                        } else {
+                            Write-Host '✔ Docker Compose installed.';
+                        }
+
+                        Write-Host 'Checking Postgres container...'
+                        if (-not (docker ps --format '{{.Names}}' | findstr /I 'postgres')) {
+                            Write-Host 'Postgres missing. It will be started via docker-compose if Docker exists.';
+                        } else {
+                            Write-Host 'Postgres is already running.';
+                        }
+
+                        Write-Host 'Checking Redis container...'
+                        if (-not (docker ps --format '{{.Names}}' | findstr /I 'redis')) {
+                            Write-Host 'Redis missing. It will be started via docker-compose if Docker exists.';
+                        } else {
+                            Write-Host 'Redis is already running.';
+                        }
+                    "
+                """
+            }
+        }
 
         /* -------------------------
            3) INSTALL DOCKER (LINUX)
@@ -173,7 +214,7 @@ pipeline {
         }
 
         /* -------------------------
-           5) UPLOAD COMPOSE FILE (OS-wise)
+           5) UPLOAD COMPOSE FILE
         ------------------------- */
         stage("Upload docker-compose.yml") {
             steps {
@@ -212,10 +253,6 @@ pipeline {
                 """
             }
         }
-
-        /* -------------------------
-           WINDOWS NOT SUPPORTED FOR COMPOSE
-        ------------------------- */
     }
 
     post {
