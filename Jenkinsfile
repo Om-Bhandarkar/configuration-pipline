@@ -25,15 +25,15 @@ pipeline {
                 withEnv(["SSH_PASS_SECRET=${params.SSH_PASS}"]) {
                     sh '''
                         sshpass -p "$SSH_PASS_SECRET" \
-                        ssh -o StrictHostKeyChecking=no -q $SSH_USER@$TARGET_IP "echo Connected OK"
+                        ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP "echo Connected OK"
                     '''
                 }
             }
         }
 
-        /* -------------------------
-           1.5) ENSURE SSH SERVICE
-        ------------------------- */
+        /* -------------------------------------------
+           1.5) ENSURE SSH SERVICE & FIREWALL ENABLED
+        ------------------------------------------- */
         stage("Ensure SSH Service & Firewall") {
             steps {
                 withEnv([
@@ -41,39 +41,63 @@ pipeline {
                     "SSH_USER=${params.SSH_USER}",
                     "TARGET_IP=${params.TARGET_IP}"
                 ]) {
-
                     script {
+
+                        // Detect OS quietly
                         def os = sh(
                             returnStdout: true,
                             script: '''
-                                sshpass -p "$SSH_PASS_SECRET" ssh -q -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP "uname 2>/dev/null" || true
+                                sshpass -p "$SSH_PASS_SECRET" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP "uname 2>/dev/null" || true
                             '''
                         ).trim().toLowerCase()
 
                         if (os.contains("linux")) {
 
+                            // LINUX Handling
                             sh '''
-                                sshpass -p "$SSH_PASS_SECRET" ssh -q -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP 'bash -s' << "EOF"
-                                    echo "Ensuring SSH is running..."
+                                sshpass -p "$SSH_PASS_SECRET" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP 'bash -s' << "EOF"
 
-                                    (apt-get update -y >/dev/null 2>&1 || yum update -y >/dev/null 2>&1) || true
-                                    (apt-get install -y openssh-server >/dev/null 2>&1 || yum install -y openssh-server >/dev/null 2>&1) || true
+                                    echo "🔐 Checking SSH service..."
 
-                                    (systemctl enable ssh >/dev/null 2>&1 || systemctl enable sshd >/dev/null 2>&1) || true
-                                    (systemctl start ssh >/dev/null 2>&1 || systemctl start sshd >/dev/null 2>&1) || true
+                                    if ! command -v sshd >/dev/null; then
+                                        echo "🔧 Installing OpenSSH server..."
+                                        apt-get update -y || yum update -y
+                                        apt-get install -y openssh-server || yum install -y openssh-server
+                                    fi
 
-                                    echo "SSH Ready."
+                                    systemctl enable ssh || systemctl enable sshd || true
+                                    systemctl start ssh || systemctl start sshd || true
+
+                                    if command -v ufw >/dev/null; then
+                                        ufw allow ssh || true
+                                    elif command -v firewall-cmd >/dev/null; then
+                                        firewall-cmd --add-service=ssh --permanent || true
+                                        firewall-cmd --reload || true
+                                    fi
+
+                                    echo "SSH configuration complete."
                                 EOF
                             '''
 
                         } else {
 
+                            // WINDOWS handling
                             sh '''
-                                sshpass -p "$SSH_PASS_SECRET" ssh -q -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP powershell -Command "
-                                    Write-Host 'Ensuring SSH service...';
-                                    Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue;
-                                    Start-Service sshd -ErrorAction SilentlyContinue;
-                                    Write-Host 'SSH Ready.';
+                                sshpass -p "$SSH_PASS_SECRET" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP powershell -Command "
+                                    Write-Host '🔐 Checking SSH service...';
+
+                                    if (Get-Service sshd -ErrorAction SilentlyContinue) {
+                                        Set-Service -Name sshd -StartupType Automatic;
+                                        Start-Service sshd;
+
+                                        if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH-Server-In-TCP')) {
+                                            New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH-Server-In-TCP' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22;
+                                        }
+
+                                        Write-Host '✔ SSH setup complete.';
+                                    } else {
+                                        Write-Host '⚠ SSH is not installed on Windows.';
+                                    }
                                 "
                             '''
                         }
@@ -87,67 +111,181 @@ pipeline {
         ------------------------- */
         stage("Detect OS") {
             steps {
+                echo "🔍 Detecting OS..."
                 script {
+
+                    // Linux check
                     def linuxCheck = sh(
                         returnStdout: true,
                         script: """
                             sshpass -p "${params.SSH_PASS}" \
-                            ssh -q -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
                         """
                     ).trim()
 
+                    echo "Linux check output: ${linuxCheck}"
+
                     if (linuxCheck.toLowerCase().contains("linux")) {
                         env.OS_TYPE = "linux"
-                        echo "OS: Linux"
+                        echo "🖥️ OS Detected: Linux"
                         return
                     }
 
+                    // Windows check
                     def winCheck = sh(
                         returnStdout: true,
                         script: """
                             sshpass -p "${params.SSH_PASS}" \
-                            ssh -q -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\"" || true
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                            "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
                         """
                     ).trim()
 
+                    echo "Windows check output: ${winCheck}"
+
                     if (winCheck.toLowerCase().contains("win32nt")) {
                         env.OS_TYPE = "windows"
-                        echo "OS: Windows"
+                        echo "🖥️ OS Detected: Windows"
                         return
                     }
 
-                    error "Could not detect OS!"
+                    error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
                 }
             }
         }
 
-        /* -------------------------------------------
-           2.5) CHECK DOCKER (LINUX) — QUIET MODE
-        ------------------------------------------- */
-        stage("Check Docker (Linux)") {
+        /* ---------------------------------------------------------
+           2.5) CHECK DOCKER, COMPOSE, POSTGRES, REDIS (LINUX)
+        --------------------------------------------------------- */
+        stage("Check Docker & Services (Linux)") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 sh """
-                    sshpass -p "${params.SSH_PASS}" ssh -q -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                    sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+
                         echo "Checking Docker..."
                         if ! command -v docker >/dev/null; then
-                            echo "Installing Docker..."
-                            (apt-get install -y docker.io >/dev/null 2>&1 || yum install -y docker >/dev/null 2>&1) || true
-                            systemctl start docker >/dev/null 2>&1
+                            echo "Docker not installed. Installing..."
+                            apt-get update -y || yum update -y
+                            apt-get install -y docker.io || yum install -y docker
+                            systemctl start docker || true
+                            systemctl enable docker || true
                         else
-                            echo "Docker OK"
+                            echo "Docker already installed."
                         fi
 
-                        echo "Checking Compose..."
+                        echo "Checking Docker Compose..."
                         if ! command -v docker-compose >/dev/null; then
-                            echo "Installing docker-compose..."
-                            curl -sL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
+                            echo "Docker Compose not installed. Installing..."
+                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
                                 -o /usr/local/bin/docker-compose
                             chmod +x /usr/local/bin/docker-compose
                         else
-                            echo "Compose OK"
+                            echo "Docker Compose already installed."
                         fi
+
+                        echo "Checking Postgres container..."
+                        if ! docker ps --format "{{.Names}}" | grep -qi postgres; then
+                            echo "Postgres missing. It will be launched via docker-compose."
+                        else
+                            echo "Postgres is already running."
+                        fi
+
+                        echo "Checking Redis container..."
+                        if ! docker ps --format "{{.Names}}" | grep -qi redis; then
+                            echo "Redis missing. It will be launched via docker-compose."
+                        else
+                            echo "Redis is already running."
+                        fi
+
                     '
+                """
+            }
+        }
+
+        /* ---------------------------------------------------------
+           2.6) CHECK DOCKER, COMPOSE, POSTGRES, REDIS (WINDOWS)
+        --------------------------------------------------------- */
+        stage("Check Docker & Services (Windows)") {
+            when { expression { env.OS_TYPE == "windows" } }
+            steps {
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "
+                        Write-Host 'Checking Docker...'
+                        if (!(docker --version)) {
+                            Write-Host '❌ Docker not installed. Please install Docker Desktop manually.';
+                        } else {
+                            Write-Host '✔ Docker installed.';
+                        }
+
+                        Write-Host 'Checking Docker Compose...'
+                        if (!(docker compose version)) {
+                            Write-Host '❌ Docker Compose not installed. Install Docker Desktop.';
+                        } else {
+                            Write-Host '✔ Docker Compose installed.';
+                        }
+
+                        Write-Host 'Checking Postgres container...'
+                        if (-not (docker ps --format '{{.Names}}' | findstr /I 'postgres')) {
+                            Write-Host 'Postgres missing. It will be started via docker-compose if Docker exists.';
+                        } else {
+                            Write-Host 'Postgres is already running.';
+                        }
+
+                        Write-Host 'Checking Redis container...'
+                        if (-not (docker ps --format '{{.Names}}' | findstr /I 'redis')) {
+                            Write-Host 'Redis missing. It will be started via docker-compose if Docker exists.';
+                        } else {
+                            Write-Host 'Redis is already running.';
+                        }
+                    "
+                """
+            }
+        }
+
+        /* -------------------------
+           3) INSTALL DOCKER (LINUX)
+        ------------------------- */
+        stage("Install Docker (Linux)") {
+            when { expression { env.OS_TYPE == "linux" } }
+            steps {
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+
+                        echo "Re-checking Docker..."
+                        if ! command -v docker >/dev/null; then
+                            echo "Installing Docker..."
+                            apt-get update -y || yum update -y
+                            apt-get install -y docker.io || yum install -y docker
+                            systemctl start docker || true
+                            systemctl enable docker || true
+                        fi
+
+                        echo "Re-checking Docker Compose..."
+                        if ! command -v docker-compose >/dev/null; then
+                            echo "Installing Docker Compose..."
+                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
+                                -o /usr/local/bin/docker-compose
+                            chmod +x /usr/local/bin/docker-compose
+                        fi
+
+                    '
+                """
+            }
+        }
+
+        /* -------------------------
+           4) INSTALL DOCKER (WINDOWS)
+        ------------------------- */
+        stage("Install Docker (Windows)") {
+            when { expression { env.OS_TYPE == "windows" } }
+            steps {
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                    "powershell -Command \\"Write-Host 'Windows detected. Install Docker Desktop manually or via winget.'\\""
                 """
             }
         }
@@ -158,29 +296,36 @@ pipeline {
         stage("Upload docker-compose.yml") {
             steps {
                 script {
-                    def destDir = env.OS_TYPE == "linux" ? COMPOSE_DIR_LINUX : COMPOSE_DIR_WIN
-                    def destFile = env.OS_TYPE == "linux" ? COMPOSE_FILE_LINUX : COMPOSE_FILE_WIN
 
-                    sh """
-                        sshpass -p "${params.SSH_PASS}" ssh -q -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${destDir}"
-                        sshpass -p "${params.SSH_PASS}" scp -q -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${destFile}
-                    """
+                    if (env.OS_TYPE == "linux") {
+                        sh """
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${COMPOSE_DIR_LINUX}"
+                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_LINUX}
+                        """
+                    }
+
+                    if (env.OS_TYPE == "windows") {
+                        sh """
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
+                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_WIN}
+                        """
+                    }
                 }
             }
         }
 
         /* -------------------------
-           6) RUN COMPOSE
+           6) RUN COMPOSE (LINUX ONLY)
         ------------------------- */
         stage("Run docker-compose (Linux)") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 sh """
-                    sshpass -p "${params.SSH_PASS}" ssh -q -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
                         cd ${COMPOSE_DIR_LINUX}
-                        docker-compose down >/dev/null 2>&1 || true
-                        docker-compose up -d --quiet-pull
-                        echo "Compose Up Completed."
+                        docker-compose down || true
+                        docker-compose up -d
                     '
                 """
             }
