@@ -33,51 +33,98 @@ pipeline {
         /* -------------------------
            2) DETECT OS
         ------------------------- */
-           stage("Detect OS") {
-                steps {
-                    echo "🔍 Detecting OS..."
-                    script {
-            
-                        // --- Try Linux check first ---
-                        def linuxCheck = sh(
-                            returnStdout: true,
-                            script: """
-                                sshpass -p "${params.SSH_PASS}" \
-                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
-                            """
-                        ).trim()
-            
-                        echo "Linux check output: ${linuxCheck}"
-            
-                        if (linuxCheck.toLowerCase().contains("linux")) {
-                            env.OS_TYPE = "linux"
-                            echo "🖥️ OS Detected: Linux"
-                            return
-                        }
-            
-                        // --- Try Windows check ---
-                        def winCheck = sh(
-                            returnStdout: true,
-                            script: """
-                                sshpass -p "${params.SSH_PASS}" \
-                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                                "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
-                            """
-                        ).trim()
-            
-                        echo "Windows check output: ${winCheck}"
-            
-                        if (winCheck.toLowerCase().contains("win32nt")) {
-                            env.OS_TYPE = "windows"
-                            echo "🖥️ OS Detected: Windows"
-                            return
-                        }
-            
-                        error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
+        stage("Detect OS") {
+            steps {
+                echo "🔍 Detecting OS..."
+                script {
+
+                    // --- Try Linux check first ---
+                    def linuxCheck = sh(
+                        returnStdout: true,
+                        script: """
+                            sshpass -p "${params.SSH_PASS}" \
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
+                        """
+                    ).trim()
+
+                    echo "Linux check output: ${linuxCheck}"
+
+                    if (linuxCheck.toLowerCase().contains("linux")) {
+                        env.OS_TYPE = "linux"
+                        echo "🖥️ OS Detected: Linux"
+                        return
                     }
+
+                    // --- Try Windows check ---
+                    def winCheck = sh(
+                        returnStdout: true,
+                        script: """
+                            sshpass -p "${params.SSH_PASS}" \
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                            "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
+                        """
+                    ).trim()
+
+                    echo "Windows check output: ${winCheck}"
+
+                    if (winCheck.toLowerCase().contains("win32nt")) {
+                        env.OS_TYPE = "windows"
+                        echo "🖥️ OS Detected: Windows"
+                        return
+                    }
+
+                    error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
                 }
             }
+        }
 
+        /* -------------------------------------------
+           2.5) CHECK DOCKER, COMPOSE, POSTGRES, REDIS
+        ------------------------------------------- */
+        stage("Check Docker & Services (Linux)") {
+            when { expression { env.OS_TYPE == "linux" } }
+            steps {
+                sh """
+                    sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+
+                        echo "Checking Docker..."
+                        if ! command -v docker >/dev/null; then
+                            echo "Docker not installed. Installing..."
+                            apt-get update -y || yum update -y
+                            apt-get install -y docker.io || yum install -y docker
+                            systemctl start docker || true
+                            systemctl enable docker || true
+                        else
+                            echo "Docker already installed."
+                        fi
+
+                        echo "Checking Docker Compose..."
+                        if ! command -v docker-compose >/dev/null; then
+                            echo "Docker Compose not installed. Installing..."
+                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
+                                -o /usr/local/bin/docker-compose
+                            chmod +x /usr/local/bin/docker-compose
+                        else
+                            echo "Docker Compose already installed."
+                        fi
+
+                        echo "Checking Postgres container..."
+                        if ! docker ps --format "{{.Names}}" | grep -qi postgres; then
+                            echo "Postgres missing. It will be launched via docker-compose."
+                        else
+                            echo "Postgres is already running."
+                        fi
+
+                        echo "Checking Redis container..."
+                        if ! docker ps --format "{{.Names}}" | grep -qi redis; then
+                            echo "Redis missing. It will be launched via docker-compose."
+                        else
+                            echo "Redis is already running."
+                        fi
+                    '
+                """
+            }
+        }
 
 
         /* -------------------------
@@ -89,14 +136,19 @@ pipeline {
                 sh """
                     sshpass -p "${params.SSH_PASS}" \
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+
+                        echo "Re-checking Docker..."
                         if ! command -v docker >/dev/null; then
+                            echo "Installing Docker..."
                             apt-get update -y || yum update -y
                             apt-get install -y docker.io || yum install -y docker
                             systemctl start docker || true
                             systemctl enable docker || true
                         fi
 
+                        echo "Re-checking Docker Compose..."
                         if ! command -v docker-compose >/dev/null; then
+                            echo "Installing Docker Compose..."
                             curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
                                 -o /usr/local/bin/docker-compose
                             chmod +x /usr/local/bin/docker-compose
@@ -162,7 +214,7 @@ pipeline {
         }
 
         /* -------------------------
-           WINDOWS IS NOT SUPPORTED FOR docker-compose directly here
+           WINDOWS NOT SUPPORTED FOR COMPOSE
         ------------------------- */
     }
 
