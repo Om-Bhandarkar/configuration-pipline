@@ -23,12 +23,10 @@ pipeline {
         ------------------------- */
         stage("Check Connection") {
             steps {
-                echo "🔍 Checking SSH connectivity to: ${params.TARGET_IP}"
                 sh """
                     sshpass -p "${params.SSH_PASS}" \
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "echo Connected OK"
                 """
-                echo "✅ SSH connection successful"
             }
         }
 
@@ -37,7 +35,6 @@ pipeline {
         ------------------------- */
         stage("Detect OS") {
             steps {
-                echo "🔍 Detecting Operating System on target machine..."
                 script {
                     def out = sh(
                         returnStdout: true,
@@ -52,10 +49,10 @@ pipeline {
                     } else if (out.toLowerCase().contains("windows") || out.toLowerCase().contains("microsoft")) {
                         env.OS_TYPE = "windows"
                     } else {
-                        error "❌ Unknown OS detected: ${out}"
+                        error "Unknown OS detected: ${out}"
                     }
 
-                    echo "🖥️ Detected OS type: ${env.OS_TYPE}"
+                    echo "Detected OS: ${env.OS_TYPE}"
                 }
             }
         }
@@ -66,36 +63,23 @@ pipeline {
         stage("Install Docker (Linux)") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
-                echo "🐧 Linux system detected → Installing Docker & docker-compose..."
                 sh """
                     sshpass -p "${params.SSH_PASS}" \
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
-
-                        echo "➡ Checking if Docker is installed..."
                         if ! command -v docker >/dev/null; then
-                            echo "⚙ Installing Docker..."
                             apt-get update -y || yum update -y
                             apt-get install -y docker.io || yum install -y docker
                             systemctl start docker || true
                             systemctl enable docker || true
-                            echo "✅ Docker installed"
-                        else
-                            echo "✔ Docker already installed"
                         fi
 
-                        echo "➡ Checking if docker-compose is installed..."
                         if ! command -v docker-compose >/dev/null; then
-                            echo "⚙ Installing docker-compose..."
                             curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
                                 -o /usr/local/bin/docker-compose
                             chmod +x /usr/local/bin/docker-compose
-                            echo "✅ docker-compose installed"
-                        else
-                            echo "✔ docker-compose already installed"
                         fi
                     '
                 """
-                echo "🐧 Linux Docker setup completed."
             }
         }
 
@@ -105,50 +89,44 @@ pipeline {
         stage("Install Docker (Windows)") {
             when { expression { env.OS_TYPE == "windows" } }
             steps {
-                echo "🪟 Windows system detected → Docker Desktop installation cannot be auto-installed."
-                echo "ℹ Please ensure Docker Desktop + Compose plugin is installed manually."
                 sh """
                     sshpass -p "${params.SSH_PASS}" \
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                    "powershell -Command \\"Write-Host '⚠ Windows detected. Install Docker Desktop manually.'\\""
+                    "powershell -Command \\"Write-Host 'Windows detected. Install Docker Desktop manually or via winget.'\\""
                 """
             }
         }
 
         /* -------------------------
-           5) UPLOAD DOCKER COMPOSE FILE (LINUX / WINDOWS)
+           5) UPLOAD COMPOSE FILE (OS-wise)
         ------------------------- */
         stage("Upload docker-compose.yml") {
             steps {
                 script {
+
                     if (env.OS_TYPE == "linux") {
-                        echo "📤 Uploading docker-compose.yml to Linux machine at: ${COMPOSE_DIR_LINUX}"
                         sh """
                             sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${COMPOSE_DIR_LINUX}"
                             sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_LINUX}
                         """
-                        echo "📦 Compose file uploaded to Linux successfully!"
                     }
 
                     if (env.OS_TYPE == "windows") {
-                        echo "📤 Uploading docker-compose.yml to Windows machine at: ${COMPOSE_DIR_WIN}"
                         sh """
                             sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
                             sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_WIN}
                         """
-                        echo "📦 Compose file uploaded to Windows successfully!"
                     }
                 }
             }
         }
 
         /* -------------------------
-           6) RUN DOCKER COMPOSE (LINUX ONLY)
+           6) RUN COMPOSE (LINUX ONLY)
         ------------------------- */
         stage("Run docker-compose (Linux)") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
-                echo "🚀 Running docker-compose on Linux machine..."
                 sh """
                     sshpass -p "${params.SSH_PASS}" \
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
@@ -157,17 +135,16 @@ pipeline {
                         docker-compose up -d
                     '
                 """
-                echo "✔ docker-compose deployment completed!"
             }
         }
+
+        /* -------------------------
+           WINDOWS IS NOT SUPPORTED FOR docker-compose directly here
+        ------------------------- */
     }
 
     post {
-        success {
-            echo "🎉 PIPELINE FINISHED: Deployment Successful"
-        }
-        failure {
-            echo "❌ PIPELINE FAILED"
-        }
+        success { echo "🎉 Deployment Successful" }
+        failure { echo "❌ Deployment Failed" }
     }
 }
