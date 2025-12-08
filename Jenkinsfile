@@ -34,7 +34,8 @@ pipeline {
                         fi
 
                         if ! command -v docker-compose >/dev/null; then
-                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\$(uname -s)-\\$(uname -m)" -o /usr/local/bin/docker-compose
+                            echo "Installing docker-compose..."
+                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" -o /usr/local/bin/docker-compose
                             chmod +x /usr/local/bin/docker-compose
                         fi
                     '
@@ -95,6 +96,8 @@ services:
 volumes:
   pgdata:
 """
+
+                    // Upload compose file
                     sh """
                         sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${COMPOSE_DIR}"
                         sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${COMPOSE_FILE}
