@@ -100,58 +100,25 @@ pipeline {
         }
 
         /* ----------------------------------------------------
-           4) CREATE DOCKER-COMPOSE.YML LOCALLY
-        ---------------------------------------------------- */
-        stage("Generate Compose File") {
-            steps {
-                script {
-                    def compose = """
-version: "3.8"
-
-services:
-  postgres:
-    container_name: infra-postgres
-    image: postgres:latest
-    environment:
-      POSTGRES_PASSWORD: example
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-
-  redis:
-    container_name: infra-redis
-    image: redis:latest
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-"""
-
-                    writeFile file: "docker-compose.yml", text: compose
-                    echo "✅ docker-compose.yml created"
-                }
-            }
-        }
-
-        /* ----------------------------------------------------
-           5) UPLOAD COMPOSE + DEPLOY
+           4) UPLOAD COMPOSE + DEPLOY (NO CREATION)
         ---------------------------------------------------- */
         stage("Upload & Deploy") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 script {
-                    echo "🚀 Deploying Compose to Linux..."
+                    echo "🚀 Uploading & Deploying docker-compose.yml"
 
                     sh """
                         # create remote dir
                         sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${LINUX_DIR}"
 
-                        # upload compose file
+                        # upload the EXISTING compose file
                         sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no \
                         docker-compose.yml \
                         ${params.SSH_USER}@${params.TARGET_IP}:${LINUX_COMPOSE}
 
-                        # run compose
+                        # deploy using compose
                         sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} "
                             cd ${LINUX_DIR}
@@ -164,13 +131,13 @@ services:
         }
 
         /* ----------------------------------------------------
-           6) VERIFY SERVICES
+           5) VERIFY SERVICES
         ---------------------------------------------------- */
         stage("Verify Postgres & Redis Containers") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 script {
-                    echo "🔎 Checking Postgres & Redis..."
+                    echo "🔎 Checking Postgres & Redis containers..."
 
                     sh """
                         sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
@@ -193,6 +160,5 @@ services:
     post {
         success { echo "🎉 Deployment Successful! Postgres & Redis are running." }
         failure { echo "❌ Deployment Failed. Check logs above." }
-        always { sh "rm -f docker-compose.yml" }
     }
 }
