@@ -1,48 +1,14 @@
-version: "3.9"
+version: "3.8"
 
 services:
-
-  app:
-    image: localhost:5000/react-app:v1
-    container_name: react_app
-    ports:
-      - "8081:80"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: always
-
   postgres:
     image: postgres:latest
-    container_name: postgres_db
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: root
-      POSTGRES_DB: mydb
+      POSTGRES_PASSWORD: example
     ports:
       - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: always
 
   redis:
     image: redis:latest
-    container_name: redis_server
     ports:
-      - "6479:6479"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 4s
-      timeout: 3s
-      retries: 5
-    restart: always
-
-volumes:
-  pgdata:
+      - "6379:6379"
