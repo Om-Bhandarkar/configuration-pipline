@@ -13,7 +13,6 @@ pipeline {
         COMPOSE_FILE_LINUX = "/infra/docker-compose.yml"
         COMPOSE_DIR_WIN    = "C:/infra"
         COMPOSE_FILE_WIN   = "C:/infra/docker-compose.yml"
-        INSTALLED_SERVICES = ""
     }
 
     stages {
@@ -65,7 +64,7 @@ pipeline {
                                 script: """
                                     sshpass -p "${params.SSH_PASS}" \
                                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                                    "powershell -Command \\\"\\\$os = [System.Environment]::OSVersion; if (\\\$os.Platform -eq 'Win32NT') { echo 'WINDOWS' } else { echo 'UNKNOWN' }\\\" 2>/dev/null || echo 'NOT_WINDOWS'"
+                                    "powershell -Command \\"\$os = [System.Environment]::OSVersion; if (\$os.Platform -eq 'Win32NT') { echo 'WINDOWS' } else { echo 'UNKNOWN' }\\" 2>/dev/null || echo 'NOT_WINDOWS'"
                                 """
                             ).trim().toLowerCase()
                             
@@ -144,10 +143,10 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
                             "powershell -Command \\"
                                 # Check if Docker is installed
-                                \\\$dockerInstalled = Get-Command docker -ErrorAction SilentlyContinue
-                                \\\$composeInstalled = Get-Command docker-compose -ErrorAction SilentlyContinue
+                                \$dockerInstalled = Get-Command docker -ErrorAction SilentlyContinue
+                                \$composeInstalled = Get-Command docker-compose -ErrorAction SilentlyContinue
                                 
-                                if (\\\$dockerInstalled) {
+                                if (\$dockerInstalled) {
                                     Write-Host '✅ Docker is already installed:' -NoNewline
                                     docker --version
                                 } else {
@@ -156,7 +155,7 @@ pipeline {
                                     Write-Host 'https://docs.docker.com/desktop/install/windows-install/'
                                 }
                                 
-                                if (\\\$composeInstalled) {
+                                if (\$composeInstalled) {
                                     Write-Host '✅ Docker Compose is already installed:' -NoNewline
                                     docker-compose --version
                                 } else {
@@ -178,8 +177,7 @@ pipeline {
                     echo "📄 Creating docker-compose.yml with PostgreSQL and Redis..."
                     
                     // Create docker-compose.yml locally
-                    def composeContent = """
-version: '3.8'
+                    def composeContent = """version: '3.8'
 
 services:
   postgres:
@@ -252,51 +250,40 @@ networks:
                             sshpass -p "${params.SSH_PASS}" \
                             ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
                             "mkdir -p ${COMPOSE_DIR_LINUX}/postgres && \
-                            echo 'CREATE EXTENSION IF NOT EXISTS \\"uuid-ossp\\";' > ${COMPOSE_DIR_LINUX}/postgres/init.sql"
+                            echo 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";' > ${COMPOSE_DIR_LINUX}/postgres/init.sql"
                         """
                         
                         // Deploy using docker-compose
                         sh """
                             sshpass -p "${params.SSH_PASS}" \
-                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "
                                 cd ${COMPOSE_DIR_LINUX}
                                 
                                 # Stop and remove existing containers
                                 docker-compose down 2>/dev/null || true
                                 
                                 # Pull images and start services
-                                echo "📥 Pulling Docker images..."
+                                echo '📥 Pulling Docker images...'
                                 docker-compose pull
                                 
-                                echo "🚀 Starting services..."
+                                echo '🚀 Starting services...'
                                 docker-compose up -d
                                 
                                 # Wait a moment for services to start
                                 sleep 10
                                 
                                 # Check running containers
-                                echo "📊 Running containers:"
+                                echo '📊 Running containers:'
                                 docker-compose ps
                                 
                                 # Check service status
-                                if docker-compose ps | grep -q "Up"; then
-                                    echo "✅ Services started successfully"
-                                    
-                                    # Get service info
-                                    PG_STATUS=\$(docker-compose ps postgres | grep -o "Up")
-                                    REDIS_STATUS=\$(docker-compose ps redis | grep -o "Up")
-                                    
-                                    if [ "\\\$PG_STATUS" = "Up" ]; then
-                                        echo "INSTALLED_SERVICES=PostgreSQL:5432" >> /tmp/services.txt
-                                    fi
-                                    if [ "\\\$REDIS_STATUS" = "Up" ]; then
-                                        echo "INSTALLED_SERVICES=Redis:6379" >> /tmp/services.txt
-                                    fi
+                                if docker-compose ps | grep -q 'Up'; then
+                                    echo '✅ Services started successfully'
                                 else
-                                    echo "❌ Services failed to start"
+                                    echo '❌ Services failed to start'
                                     docker-compose logs
                                 fi
-                            '
+                            "
                         """
                         
                     } else if (env.OS_TYPE == "windows") {
@@ -306,7 +293,7 @@ networks:
                         sh """
                             sshpass -p "${params.SSH_PASS}" \
                             ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                            "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
+                            "powershell -Command \"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\""
                             
                             sshpass -p "${params.SSH_PASS}" \
                             scp -o StrictHostKeyChecking=no docker-compose.yml \
@@ -333,7 +320,8 @@ networks:
                         sh """
                             sshpass -p "${params.SSH_PASS}" \
                             ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
-                                echo "\\n📊 Service Status:"
+                                echo ""
+                                echo "📊 Service Status:"
                                 echo "=================="
                                 
                                 # Check PostgreSQL
@@ -352,11 +340,13 @@ networks:
                                     echo "❌ Redis is NOT running"
                                 fi
                                 
-                                echo "\\n🌐 Services accessible at:"
+                                echo ""
+                                echo "🌐 Services accessible at:"
                                 echo "   - PostgreSQL: ${params.TARGET_IP}:5432"
                                 echo "   - Redis: ${params.TARGET_IP}:6379"
-                                echo "\\n🔧 Docker containers:"
-                                docker ps --filter "name=postgres_db\|redis_cache" --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
+                                echo ""
+                                echo "🔧 Docker containers:"
+                                docker ps --filter "name=postgres_db" --filter "name=redis_cache" --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
                             '
                         """
                     }
@@ -372,11 +362,17 @@ networks:
                 echo "========================="
                 echo "Target System: ${params.TARGET_IP}"
                 echo "OS Type: ${env.OS_TYPE}"
-                echo "Installed Services:"
-                echo "  - PostgreSQL:5432 (admin/admin123)"
-                echo "  - Redis:6379 (password: redis123)"
                 echo ""
-                echo "📌 Connection Details:"
+                echo "📦 Installed Services:"
+                echo "  - PostgreSQL:5432"
+                echo "    Username: admin"
+                echo "    Password: admin123"
+                echo "    Database: appdb"
+                echo ""
+                echo "  - Redis:6379"
+                echo "    Password: redis123"
+                echo ""
+                echo "🔌 Connection Details:"
                 echo "  PostgreSQL: postgresql://admin:admin123@${params.TARGET_IP}:5432/appdb"
                 echo "  Redis: redis://:redis123@${params.TARGET_IP}:6379"
                 echo ""
