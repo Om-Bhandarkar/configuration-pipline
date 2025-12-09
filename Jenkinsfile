@@ -33,52 +33,44 @@ pipeline {
         /* -------------------------
            2) DETECT OS
         ------------------------- */
-           stage("Detect OS") {
-                steps {
-                    echo "🔍 Detecting OS..."
-                    script {
-            
-                        // --- Try Linux check first ---
-                        def linuxCheck = sh(
-                            returnStdout: true,
-                            script: """
-                                sshpass -p "${params.SSH_PASS}" \
-                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
-                            """
-                        ).trim()
-            
-                        echo "Linux check output: ${linuxCheck}"
-            
-                        if (linuxCheck.toLowerCase().contains("linux")) {
-                            env.OS_TYPE = "linux"
-                            echo "🖥️ OS Detected: Linux"
-                            return
-                        }
-            
-                        // --- Try Windows check ---
-                        def winCheck = sh(
-                            returnStdout: true,
-                            script: """
-                                sshpass -p "${params.SSH_PASS}" \
-                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                                "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
-                            """
-                        ).trim()
-            
-                        echo "Windows check output: ${winCheck}"
-            
-                        if (winCheck.toLowerCase().contains("win32nt")) {
-                            env.OS_TYPE = "windows"
-                            echo "🖥️ OS Detected: Windows"
-                            return
-                        }
-            
-                        error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
+        stage("Detect OS") {
+            steps {
+                echo "🔍 Detecting OS..."
+                script {
+
+                    def linuxCheck = sh(
+                        returnStdout: true,
+                        script: """
+                            sshpass -p "${params.SSH_PASS}" \
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
+                        """
+                    ).trim()
+
+                    if (linuxCheck.toLowerCase().contains("linux")) {
+                        env.OS_TYPE = "linux"
+                        echo "🟢 Linux detected"
+                        return
                     }
+
+                    def winCheck = sh(
+                        returnStdout: true,
+                        script: """
+                            sshpass -p "${params.SSH_PASS}" \
+                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                            "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
+                        """
+                    ).trim()
+
+                    if (winCheck.toLowerCase().contains("win32nt")) {
+                        env.OS_TYPE = "windows"
+                        echo "🟦 Windows detected"
+                        return
+                    }
+
+                    error "❌ Unknown OS. Linux: ${linuxCheck}, Windows: ${winCheck}"
                 }
             }
-
-
+        }
 
         /* -------------------------
            3) INSTALL DOCKER (LINUX)
@@ -92,8 +84,8 @@ pipeline {
                         if ! command -v docker >/dev/null; then
                             apt-get update -y || yum update -y
                             apt-get install -y docker.io || yum install -y docker
-                            systemctl start docker || true
                             systemctl enable docker || true
+                            systemctl start docker || true
                         fi
 
                         if ! command -v docker-compose >/dev/null; then
@@ -121,7 +113,7 @@ pipeline {
         }
 
         /* -------------------------
-           5) UPLOAD COMPOSE FILE (OS-wise)
+           5) UPLOAD docker-compose.yml
         ------------------------- */
         stage("Upload docker-compose.yml") {
             steps {
@@ -136,7 +128,9 @@ pipeline {
 
                     if (env.OS_TYPE == "windows") {
                         sh """
-                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                            "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
+                            
                             sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_WIN}
                         """
                     }
@@ -145,7 +139,7 @@ pipeline {
         }
 
         /* -------------------------
-           6) RUN COMPOSE (LINUX ONLY)
+           6) RUN docker-compose (LINUX)
         ------------------------- */
         stage("Run docker-compose (Linux)") {
             when { expression { env.OS_TYPE == "linux" } }
@@ -162,8 +156,40 @@ pipeline {
         }
 
         /* -------------------------
-           WINDOWS IS NOT SUPPORTED FOR docker-compose directly here
+           7) VERIFY INSTALLATION
         ------------------------- */
+        stage("Verify Installation") {
+            steps {
+                script {
+                    def IP = params.TARGET_IP.trim()
+
+                    if (env.OS_TYPE == "linux") {
+                        sh """
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${IP} "
+                                echo '===== VERIFY (LINUX) =====';
+                                docker --version;
+                                docker-compose --version;
+                                systemctl is-active docker;
+                                docker ps;
+                                ls -l ${COMPOSE_FILE_LINUX} || echo '❌ Compose file missing';
+                                echo '==========================';
+                            "
+                        """
+                    } else {
+                        sh """
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${IP} powershell -Command "
+                                Write-Host '===== VERIFY (WINDOWS) =====';
+                                docker --version;
+                                docker-compose --version;
+                                docker ps;
+                                Test-Path '${COMPOSE_FILE_WIN}';
+                                Write-Host '==============================';
+                            "
+                        """
+                    }
+                }
+            }
+        }
     }
 
     post {
