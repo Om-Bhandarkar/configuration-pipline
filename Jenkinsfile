@@ -11,17 +11,12 @@ pipeline {
         OS_TYPE = ""
         LINUX_DIR = "/infra"
         LINUX_COMPOSE = "/infra/docker-compose.yml"
-
-        WIN_DIR = "C:/infra"
-        WIN_COMPOSE = "C:/infra/docker-compose.yml"
-        
-        REMOTE_PATH='export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
     }
 
     stages {
 
         /* ----------------------------------------------------
-           1) CHECK CONNECTIVITY
+           1) CHECK SSH CONNECTION
         ---------------------------------------------------- */
         stage("Check SSH Connection") {
             steps {
@@ -38,7 +33,7 @@ pipeline {
         }
 
         /* ----------------------------------------------------
-           2) OS DETECTION
+           2) DETECT OS
         ---------------------------------------------------- */
         stage("Detect OS") {
             steps {
@@ -56,26 +51,21 @@ pipeline {
                     if (osName.contains("linux")) {
                         env.OS_TYPE = "linux"
                         echo "✅ Remote OS: Linux"
-                    } 
-                    else if (osName.contains("windows")) {
-                        env.OS_TYPE = "windows"
-                        echo "✅ Remote OS: Windows"
-                    }
-                    else {
-                        error "❌ Unable to detect OS. Response: ${osName}"
+                    } else {
+                        error "❌ Only Linux supported right now!"
                     }
                 }
             }
         }
 
         /* ----------------------------------------------------
-           3) INSTALL DOCKER + COMPOSE (LINUX ONLY)
+           3) INSTALL DOCKER + COMPOSE (LINUX)
         ---------------------------------------------------- */
-        stage("Install Docker & Docker Compose (Linux)") {
+        stage("Install Docker & Docker Compose") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 script {
-                    echo "🐳 Ensuring Docker & Docker Compose exist..."
+                    echo "🐳 Installing Docker & Compose if missing..."
 
                     sh """
                         sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
@@ -93,10 +83,8 @@ pipeline {
                             fi
 
                             systemctl start docker || service docker start || true
-
                             echo "Docker Version: \$(docker --version)"
 
-                            # Install compose v2
                             if ! command -v docker-compose >/dev/null 2>&1; then
                                 echo "📦 Installing Docker Compose..."
                                 curl -L "https://github.com/docker/compose/releases/download/v2.20.3/docker-compose-linux-x86_64" \
@@ -118,22 +106,21 @@ pipeline {
             steps {
                 script {
                     def compose = """
-version: '3.8'
+version: "3.8"
 
 services:
   postgres:
-    image: postgres:15-alpine
+    container_name: infra-postgres
+    image: postgres:latest
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin123
-      POSTGRES_DB: appdb
+      POSTGRES_PASSWORD: example
     ports:
       - "5432:5432"
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
-    command: redis-server --requirepass redis123
+    container_name: infra-redis
+    image: redis:latest
     ports:
       - "6379:6379"
     restart: unless-stopped
@@ -146,34 +133,30 @@ services:
         }
 
         /* ----------------------------------------------------
-           5) UPLOAD COMPOSE + DEPLOY (LINUX)
+           5) UPLOAD COMPOSE + DEPLOY
         ---------------------------------------------------- */
-        stage("Upload & Deploy (Linux)") {
+        stage("Upload & Deploy") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 script {
-                    echo "🚀 Deploying to Linux..."
+                    echo "🚀 Deploying Compose to Linux..."
 
                     sh """
+                        # create remote dir
                         sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${LINUX_DIR}"
 
+                        # upload compose file
                         sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no \
                         docker-compose.yml \
                         ${params.SSH_USER}@${params.TARGET_IP}:${LINUX_COMPOSE}
 
+                        # run compose
                         sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} "
-                            ${REMOTE_PATH}
                             cd ${LINUX_DIR}
-                            echo '📥 Pulling images...'
                             docker-compose pull
-
-                            echo '🚀 Starting containers...'
-                            docker-compose up -d || { echo '❌ Compose failed'; exit 1; }
-
-                            echo '📊 Running Containers:'
-                            docker ps
+                            docker-compose up -d
                         "
                     """
                 }
@@ -183,16 +166,23 @@ services:
         /* ----------------------------------------------------
            6) VERIFY SERVICES
         ---------------------------------------------------- */
-        stage("Verify Running Containers") {
+        stage("Verify Postgres & Redis Containers") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 script {
-                    echo "🔎 Checking service status..."
+                    echo "🔎 Checking Postgres & Redis..."
 
                     sh """
                         sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} "
+                            echo '--- Running Containers ---'
                             docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+
+                            echo '\\nChecking infra-postgres...'
+                            docker ps | grep infra-postgres && echo '✅ Postgres Running' || echo '❌ Postgres NOT Running!'
+
+                            echo '\\nChecking infra-redis...'
+                            docker ps | grep infra-redis && echo '✅ Redis Running' || echo '❌ Redis NOT Running!'
                         "
                     """
                 }
@@ -201,14 +191,8 @@ services:
     }
 
     post {
-        success {
-            echo "🎉 Deployment Success! Containers are LIVE on remote machine."
-        }
-        failure {
-            echo "❌ Deployment Failed. Check logs above."
-        }
-        always {
-            sh "rm -f docker-compose.yml"
-        }
+        success { echo "🎉 Deployment Successful! Postgres & Redis are running." }
+        failure { echo "❌ Deployment Failed. Check logs above." }
+        always { sh "rm -f docker-compose.yml" }
     }
 }
