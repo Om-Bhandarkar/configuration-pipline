@@ -46,41 +46,43 @@ pipeline {
            2) Detect Operating System
         ------------------------------ */
         stage("Detect OS") {
-            steps {
-                script {
-                    echo "🔍 Detecting OS..."
-
-                    def isLinux = sh(
-                        returnStatus: true,
-                        script: '''
-                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" "uname" >/dev/null 2>&1
-                        '''
-                    ) == 0
-
-                    if (isLinux) {
-                        env.OS_TYPE = "linux"
-                        echo "🟢 Linux detected"
-                        return
+                steps {
+                    script {
+                        echo "🔍 Detecting OS..."
+            
+                        // ---- Linux Check ----
+                        def isLinux = sh(
+                            returnStatus: true,
+                            script: """
+                                sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP uname >/dev/null 2>&1
+                            """
+                        ) == 0
+            
+                        if (isLinux) {
+                            env.OS_TYPE = "linux"
+                            echo "🟢 Linux detected"
+                            return
+                        }
+            
+                        // ---- Windows Check ----
+                        def isWindows = sh(
+                            returnStatus: true,
+                            script: """
+                                sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no $SSH_USER@$TARGET_IP powershell -Command "(Get-CimInstance Win32_OperatingSystem).Caption" >/dev/null 2>&1
+                            """
+                        ) == 0
+            
+                        if (isWindows) {
+                            env.OS_TYPE = "windows"
+                            echo "🟦 Windows detected"
+                            return
+                        }
+            
+                        error "❌ Unknown OS!"
                     }
-
-                    def isWindows = sh(
-                        returnStatus: true,
-                        script: '''
-                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" \
-                                "powershell -Command \"(Get-CimInstance Win32_OperatingSystem).Caption\"" >/dev/null 2>&1
-                        '''
-                    ) == 0
-
-                    if (isWindows) {
-                        env.OS_TYPE = "windows"
-                        echo "🟦 Windows detected"
-                        return
-                    }
-
-                    error "❌ Unknown OS!"
                 }
             }
-        }
+
 
         /* ------------------------------
            3) Configure OS Requirements
