@@ -50,11 +50,15 @@ pipeline {
                 script {
                     echo "🔍 Detecting OS..."
         
-                    // Linux check
+                    // Trim IP to remove accidental leading/trailing spaces
+                    def CLEAN_IP = TARGET_IP.trim()
+                    echo "Using IP: '${CLEAN_IP}'"
+        
+                    // LINUX CHECK
                     def isLinux = sh(
                         returnStatus: true,
                         script: """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} uname >/dev/null 2>&1
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} uname >/dev/null 2>&1
                         """
                     ) == 0
         
@@ -64,11 +68,11 @@ pipeline {
                         return
                     }
         
-                    // Windows check
+                    // WINDOWS CHECK
                     def isWindows = sh(
                         returnStatus: true,
                         script: """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} powershell -Command "(Get-CimInstance Win32_OperatingSystem).Caption" >/dev/null 2>&1
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} powershell -Command "(Get-CimInstance Win32_OperatingSystem).Caption" >/dev/null 2>&1
                         """
                     ) == 0
         
@@ -78,11 +82,10 @@ pipeline {
                         return
                     }
         
-                    error "❌ Unknown OS! Remote SSH may be failing."
+                    error "❌ Unknown OS! SSH command failed. Check IP and credentials."
                 }
             }
         }
-
 
 
         /* ------------------------------
