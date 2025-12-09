@@ -16,8 +16,8 @@ pipeline {
 
     stages {
 
-        /* ------------------------------
-           0) Validate compose file 
+        /* ------------------------------ 
+           0) Validate compose file
         ------------------------------ */
         stage("Validate compose") {
             steps {
@@ -36,7 +36,7 @@ pipeline {
             steps {
                 script {
                     if (sh(returnStatus: true, script: "command -v sshpass") != 0) {
-                        error "❌ sshpass missing. Install: sudo apt/yum install sshpass"
+                        error "❌ sshpass missing. Install sshpass first."
                     }
                 }
             }
@@ -49,44 +49,41 @@ pipeline {
             steps {
                 script {
                     echo "🔍 Detecting OS..."
-        
-                    // Trim IP to remove accidental leading/trailing spaces
+
                     def CLEAN_IP = TARGET_IP.trim()
-                    echo "Using IP: '${CLEAN_IP}'"
-        
-                    // LINUX CHECK
+
+                    // Linux check
                     def isLinux = sh(
                         returnStatus: true,
                         script: """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} uname >/dev/null 2>&1
                         """
                     ) == 0
-        
+
                     if (isLinux) {
                         env.OS_TYPE = "linux"
                         echo "🟢 Linux detected"
                         return
                     }
-        
-                    // WINDOWS CHECK
+
+                    // Windows check
                     def isWindows = sh(
                         returnStatus: true,
                         script: """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} powershell -Command "(Get-CimInstance Win32_OperatingSystem).Caption" >/dev/null 2>&1
                         """
                     ) == 0
-        
+
                     if (isWindows) {
                         env.OS_TYPE = "windows"
                         echo "🟦 Windows detected"
                         return
                     }
-        
-                    error "❌ Unknown OS! SSH command failed. Check IP and credentials."
+
+                    error "❌ Unknown OS! SSH may be failing or wrong IP."
                 }
             }
         }
-
 
         /* ------------------------------
            3) Configure OS Requirements
@@ -106,13 +103,14 @@ pipeline {
         stage("Upload Compose") {
             steps {
                 script {
-                    def dir  = env.OS_TYPE == "linux" ? LINUX_DIR     : WIN_DIR
-                    def path = env.OS_TYPE == "linux" ? LINUX_COMPOSE : WIN_COMPOSE
+                    def CLEAN_IP = TARGET_IP.trim()
+                    def dir  = (env.OS_TYPE == "linux") ? LINUX_DIR     : WIN_DIR
+                    def path = (env.OS_TYPE == "linux") ? LINUX_COMPOSE : WIN_COMPOSE
 
-                    sh '''
-                        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" "mkdir -p '"'''+dir+'''"'"
-                        sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no docker-compose.yml "$SSH_USER@$TARGET_IP":'"'''+path+'''"
-                    '''
+                    sh """
+                        sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} "mkdir -p '${dir}'"
+                        sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${CLEAN_IP}:${path}
+                    """
                 }
             }
         }
@@ -123,17 +121,19 @@ pipeline {
         stage("Run Compose") {
             steps {
                 script {
+                    def CLEAN_IP = TARGET_IP.trim()
+
                     if (env.OS_TYPE == "linux") {
-                        sh '''
-                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" "
-                                cd ''' + LINUX_DIR + ''' && docker-compose up -d
+                        sh """
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} "
+                                cd ${LINUX_DIR} && docker-compose up -d
                             "
-                        '''
+                        """
                     } else {
-                        sh '''
-                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" `
-                                powershell -Command "docker compose -f ''' + WIN_COMPOSE + ''' up -d"
-                        '''
+                        sh """
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} \
+                                powershell -Command "docker compose -f '${WIN_COMPOSE}' up -d"
+                        """
                     }
                 }
             }
@@ -141,48 +141,44 @@ pipeline {
     }
 
     /* ------------------------------
-       POST DEPLOYMENT SYSTEM SUMMARY
+       POST DEPLOYMENT SUMMARY
     ------------------------------ */
     post {
         success {
             echo "🎉 Deployment Complete!"
-            echo "📦 Collecting remote system information..."
+            echo "📦 Gathering System Summary..."
 
             script {
-                if (env.OS_TYPE == "linux") {
+                def CLEAN_IP = TARGET_IP.trim()
 
-                    /* ---- LINUX SUMMARY ---- */
-                    sh '''
-                        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" '
+                if (env.OS_TYPE == "linux") {
+                    sh """
+                        sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} '
                             echo "=============================="
                             echo "  🔍 SYSTEM SUMMARY (LINUX)"
                             echo "=============================="
 
-                            echo -e "\\n▶ Installed Tools:"
-                            docker --version 2>/dev/null
-                            docker-compose --version 2>/dev/null
-                            sshd -V 2>&1 | head -n 1
+                            echo "▶ Installed Tools:"
+                            docker --version || true
+                            docker-compose --version || true
 
-                            echo -e "\\n▶ Active Ports:"
-                            ss -tulnp 2>/dev/null || netstat -tulnp
+                            echo "\\n▶ Active Ports:"
+                            ss -tulnp 2>/dev/null || netstat -tulnp || true
 
-                            echo -e "\\n▶ Running Containers:"
-                            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
+                            echo "\\n▶ Running Containers:"
+                            docker ps --format "table {{.Names}}\\t{{.Image}}\\t{{.Ports}}"
 
-                            echo -e "\\n▶ docker-compose.yml Location:"
-                            echo "'${LINUX_COMPOSE}'"
+                            echo "\\n▶ docker-compose.yml Location:"
+                            echo "${LINUX_COMPOSE}"
 
                             echo "=============================="
                             echo "Summary Complete ✔"
                             echo "=============================="
                         '
-                    '''
-
+                    """
                 } else {
-
-                    /* ---- WINDOWS SUMMARY ---- */
-                    sh '''
-                        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" `
+                    sh """
+                        sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} \
                             powershell -Command "
                                 Write-Host '==============================';
                                 Write-Host '  🔍 SYSTEM SUMMARY (WINDOWS)';
@@ -208,7 +204,7 @@ pipeline {
                                 Write-Host 'Summary Complete ✔';
                                 Write-Host '==============================';
                             "
-                    '''
+                    """
                 }
             }
         }
@@ -220,16 +216,16 @@ pipeline {
 }
 
 /* =======================================================
-   🔧 Utility Functions
+   🔧 LINUX CONFIG
 ======================================================== */
-
 def configureLinux() {
-    sh '''
-        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" '
+    def CLEAN_IP = TARGET_IP.trim()
+
+    sh """
+        sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} '
             set -e
             echo "🔧 Preparing Linux System..."
 
-            # Install Docker if missing
             if ! command -v docker >/dev/null; then
                 echo "Installing Docker..."
                 apt-get update -y || true
@@ -237,46 +233,47 @@ def configureLinux() {
                 systemctl enable docker
                 systemctl start docker
             fi
-            
-            # Install Docker Compose
+
             if ! command -v docker-compose >/dev/null; then
-                curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m) \
+                curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\$(uname -s)-\\$(uname -m) \
                     -o /usr/local/bin/docker-compose
                 chmod +x /usr/local/bin/docker-compose
             fi
 
             echo "Linux Ready ✔"
         '
-    '''
+    """
 }
 
+/* =======================================================
+   🔧 WINDOWS CONFIG
+======================================================== */
 def configureWindows() {
-    sh '''
-        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" `
+    def CLEAN_IP = TARGET_IP.trim()
+
+    sh """
+        sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${CLEAN_IP} \
             powershell -Command "
                 Write-Host '🔧 Preparing Windows System...';
 
-                # Ensure SSH Running
-                $svc = Get-Service sshd -ErrorAction SilentlyContinue
-                if ($svc) {
+                \$svc = Get-Service sshd -ErrorAction SilentlyContinue
+                if (\$svc) {
                     Set-Service sshd -StartupType Automatic; Start-Service sshd
                     if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH')) {
                         New-NetFirewallRule -DisplayName 'OpenSSH' -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow
                     }
                 } else {
-                    Write-Host '❌ Install OpenSSH manually first.'
+                    Write-Host '❌ OpenSSH not installed.'
                 }
 
-                # Ensure Docker Installed
                 if (!(docker --version)) {
                     if (Get-Command winget -ErrorAction SilentlyContinue) {
                         winget install -e --id Docker.DockerDesktop -h --accept-package-agreements --accept-source-agreements
-                    } else {
-                        Write-Host '❌ Cannot install Docker (winget missing)'
                     }
+                    else { Write-Host '❌ winget missing.' }
                 }
 
                 Write-Host 'Windows Ready ✔'
             "
-    '''
+    """
 }
