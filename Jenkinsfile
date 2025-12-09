@@ -1,230 +1,191 @@
 pipeline {
     agent any
 
+    // 1) User inputs
     parameters {
-        string(name: 'TARGET_IP', description: 'Target Server IP')
-        string(name: 'SSH_USER', defaultValue: 'root', description: 'SSH Username')
-        password(name: 'SSH_PASS', description: 'SSH Password')
+        string(name: 'TARGET_IP', description: 'Remote machine IP')
+        string(name: 'TARGET_USER', description: 'Remote machine username')
+        password(name: 'TARGET_PASSWORD', description: 'Remote machine password')
+        string(name: 'REGISTRY_URL', defaultValue: 'myregistry.example.com', description: 'Private Docker registry (e.g. myregistry.example.com)')
     }
 
     environment {
-        OS_TYPE = ""
-        PATH_FIX = "export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin;"
-        COMPOSE_DIR_LINUX  = "/infra"
-        COMPOSE_FILE_LINUX = "/infra/docker-compose.yml"
-        COMPOSE_DIR_WIN    = "C:/infra"
-        COMPOSE_FILE_WIN   = "C:/infra/docker-compose.yml"
+        REGISTRY       = "${REGISTRY_URL}"
+        POSTGRES_IMAGE = "${REGISTRY_URL}/custom-postgres:latest"
+        REDIS_IMAGE    = "${REGISTRY_URL}/custom-redis:latest"
     }
 
     stages {
 
-        /* -------------------------
-           1) CHECK CONNECTION
-        ------------------------- */
-        stage("Check Connection") {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        // 2) Build & push images to private registry
+        stage('Build & Push Docker Images') {
+            steps {
+                sh '''
+                echo "Building and pushing Postgres & Redis images..."
+
+                # Example: adjust paths / Dockerfiles as per your repo
+                docker build -t $POSTGRES_IMAGE -f docker/postgres/Dockerfile .
+                docker build -t $REDIS_IMAGE    -f docker/redis/Dockerfile    .
+
+                docker push $POSTGRES_IMAGE
+                docker push $REDIS_IMAGE
+                '''
+            }
+        }
+
+        // 3) Detect remote OS (Linux / Windows)
+        stage('Detect Remote OS') {
             steps {
                 script {
-                    echo "🔗 Connecting to remote system: ${params.TARGET_IP}"
-                    sh """
-                        sshpass -p "${params.SSH_PASS}" \
-                        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-                        ${params.SSH_USER}@${params.TARGET_IP} "echo '✅ connection OK'"
-                    """
+                    def osInfo = sh(
+                        script: """
+                        sshpass -p '${TARGET_PASSWORD}' \
+                          ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_IP} \
+                          "uname 2>/dev/null || ver 2>/dev/null"
+                        """,
+                        returnStdout: true
+                    ).trim().toLowerCase()
+
+                    if (osInfo.contains('linux')) {
+                        env.REMOTE_OS = 'linux'
+                    } else if (osInfo.contains('windows')) {
+                        env.REMOTE_OS = 'windows'
+                    } else {
+                        error "Remote OS detect करू शकलो नाही. Output: ${osInfo}"
+                    }
+
+                    echo "Remote OS detected: ${env.REMOTE_OS}"
                 }
             }
         }
 
-        /* -------------------------
-           2) DETECT OS
-        ------------------------- */
-        stage("Detect OS") {
+        // 4) Check native Postgres & Redis on remote
+        stage('Check Native Postgres & Redis on Remote') {
             steps {
                 script {
-                    echo "🔍 Detecting remote OS..."
+                    if (env.REMOTE_OS == 'linux') {
+                        sh """
+                        sshpass -p '${TARGET_PASSWORD}' \
+                          ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_IP} '
+                            echo "Checking PostgreSQL..."
+                            if command -v psql >/dev/null 2>&1; then
+                              echo "PostgreSQL already installed on host";
+                            else
+                              echo "PostgreSQL NOT installed on host";
+                            fi
 
-                    def os = sh(returnStdout: true, script: """
-                        sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} "uname -s || echo UNKNOWN"
-                    """).trim().toLowerCase()
-
-                    if (os.contains("linux")) {
-                        env.OS_TYPE = "linux"
-                        echo "✅ Linux detected"
-                    } else {
-                        env.OS_TYPE = "windows"
-                        echo "⚠ Windows detected"
+                            echo "Checking Redis..."
+                            if command -v redis-server >/dev/null 2>&1; then
+                              echo "Redis already installed on host";
+                            else
+                              echo "Redis NOT installed on host";
+                            fi
+                          '
+                        """
+                    } else if (env.REMOTE_OS == 'windows') {
+                        // Windows check (PowerShell) – adjust as per your setup
+                        sh """
+                        sshpass -p '${TARGET_PASSWORD}' \
+                          ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_IP} "
+                            powershell -Command \\
+                              \\"Write-Output 'Checking PostgreSQL...'; \\
+                                if (Get-Command psql -ErrorAction SilentlyContinue) { 'PostgreSQL already installed' } else { 'PostgreSQL NOT installed' }; \\
+                                Write-Output 'Checking Redis...'; \\
+                                if (Get-Command redis-server -ErrorAction SilentlyContinue) { 'Redis already installed' } else { 'Redis NOT installed' }\\" "
+                        """
                     }
                 }
             }
         }
 
-        /* -------------------------
-           3) INSTALL DOCKER & COMPOSE
-        ------------------------- */
-        stage("Install Docker & Compose") {
-            when { expression { env.OS_TYPE == "linux" } }
+        // 5) Install Docker + Docker Compose on remote (if missing)
+        stage('Install Docker on Remote') {
             steps {
                 script {
-                    echo "🐳 Installing Docker & Docker Compose on Linux..."
-
-                    sh """
-                        sshpass -p "${params.SSH_PASS}" \
-                        ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
-                            ${PATH_FIX}
+                    if (env.REMOTE_OS == 'linux') {
+                        sh """
+                        sshpass -p '${TARGET_PASSWORD}' \
+                          ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_IP} '
+                            set -e
 
                             if ! command -v docker >/dev/null 2>&1; then
-                                echo "📦 Installing Docker..."
-
-                                if command -v apt-get >/dev/null 2>&1; then
-                                    apt-get update -y
-                                    apt-get install -y docker.io
-                                elif command -v yum >/dev/null 2>&1; then
-                                    yum install -y docker
-                                fi
-
-                                systemctl enable docker
-                                systemctl start docker
+                              echo "Installing Docker..."
+                              curl -fsSL https://get.docker.com | sh
+                            else
+                              echo "Docker already installed"
                             fi
 
-                            echo "Docker: \$(docker --version)"
-
-                            # Install Compose v2
                             if ! command -v docker-compose >/dev/null 2>&1; then
-                                echo "📦 Installing Docker Compose v2..."
-                                curl -sSL https://github.com/docker/compose/releases/download/v2.20.3/docker-compose-linux-x86_64 \
-                                    -o /usr/local/bin/docker-compose
-                                chmod +x /usr/local/bin/docker-compose
-                                ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
+                              echo "Installing Docker Compose..."
+                              sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" -o /usr/local/bin/docker-compose
+                              sudo chmod +x /usr/local/bin/docker-compose
+                            else
+                              echo "Docker Compose already installed"
                             fi
-
-                            echo "Compose: \$(docker-compose --version)"
-                        '
-                    """
-                }
-            }
-        }
-
-        /* -------------------------
-           4) CREATE DOCKER COMPOSE FILE
-        ------------------------- */
-        stage("Create Compose File") {
-            steps {
-                script {
-                    echo "📄 Creating docker-compose.yml..."
-
-                    def yml = """version: '3.8'
-
-services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: postgres_db
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin123
-      POSTGRES_DB: appdb
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    restart: always
-
-  redis:
-    image: redis:7-alpine
-    container_name: redis_cache
-    command: redis-server --requirepass redis123
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: always
-
-volumes:
-  postgres_data:
-  redis_data:
-"""
-
-                    writeFile file: "docker-compose.yml", text: yml
-                    echo "✅ docker-compose.yml created."
-                }
-            }
-        }
-
-        /* -------------------------
-           5) DEPLOY STACK
-        ------------------------- */
-        stage("Upload & Deploy Services") {
-            when { expression { env.OS_TYPE == "linux" } }
-            steps {
-                script {
-                    echo "🚀 Deploying services on Linux..."
-
-                    // Upload compose file
-                    sh """
-                        sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${COMPOSE_DIR_LINUX}/postgres"
-
-                        sshpass -p "${params.SSH_PASS}" \
-                        scp -o StrictHostKeyChecking=no docker-compose.yml \
-                        ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_DIR_LINUX}/docker-compose.yml
-                    """
-
-                    // Upload init.sql
-                    sh """
-                        sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} \
-                        "echo 'CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";' > ${COMPOSE_DIR_LINUX}/postgres/init.sql"
-                    """
-
-                    // RUN Docker Compose
-                    sh """
-                        sshpass -p "${params.SSH_PASS}" \
-                        ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "
-                            ${PATH_FIX}
-                            cd ${COMPOSE_DIR_LINUX}
-
-                            echo '🛑 Stopping old containers...'
-                            docker compose down || true
-
-                            echo '📥 Pulling images...'
-                            docker compose pull
-
-                            echo '🚀 Starting services...'
-                            docker compose up -d
-
-                            echo '⏳ Waiting 5s...'
-                            sleep 5
-
-                            echo '📊 Containers running:'
-                            docker compose ps
+                          '
+                        """
+                    } else if (env.REMOTE_OS == 'windows') {
+                        // NOTE: ही script फक्त example आहे. तुझ्या env नुसार installer बदला (Chocolatey, winget इ.)
+                        sh """
+                        sshpass -p '${TARGET_PASSWORD}' \
+                          ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_IP} "
+                            powershell -Command \\
+                              \\"if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { \\
+                                  Write-Output 'Installing Docker (Windows)...'; \\
+                                  choco install docker-cli -y \\
+                                } else { \\
+                                  Write-Output 'Docker already installed' \\
+                                }\\"
                         "
-                    """
+                        """
+                    }
                 }
             }
         }
 
-        /* -------------------------
-           6) VERIFY SERVICES
-        ------------------------- */
-        stage("Verify Deployment") {
-            when { expression { env.OS_TYPE == "linux" } }
+        // 6) Copy docker-compose.yml to remote and deploy containers
+        stage('Deploy via Docker Compose on Remote') {
             steps {
                 script {
-                    echo "🔍 Verifying remote containers..."
-
+                    // docker-compose.yml Jenkins repo मधून SCP ने remote वर पाठवतो
                     sh """
-                        sshpass -p "${params.SSH_PASS}" \
-                        ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
-                            ${PATH_FIX}
-
-                            echo "--------- Docker PS ----------"
-                            docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
-
-                            echo ""
-                            echo "PostgreSQL running? -> \$(docker ps | grep -c postgres_db)"
-                            echo "Redis running?      -> \$(docker ps | grep -c redis_cache)"
-                        '
+                    sshpass -p '${TARGET_PASSWORD}' \
+                      scp -o StrictHostKeyChecking=no docker-compose.yml \
+                          ${TARGET_USER}@${TARGET_IP}:/tmp/docker-compose.yml
                     """
+
+                    if (env.REMOTE_OS == 'linux') {
+                        sh """
+                        sshpass -p '${TARGET_PASSWORD}' \
+                          ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_IP} '
+                            set -e
+                            echo "Logging into registry $REGISTRY ..."
+                            docker login $REGISTRY
+
+                            echo "Pulling latest images..."
+                            docker-compose -f /tmp/docker-compose.yml pull
+
+                            echo "Starting containers..."
+                            docker-compose -f /tmp/docker-compose.yml up -d
+                          '
+                        """
+                    } else if (env.REMOTE_OS == 'windows') {
+                        // Windows साठीही same idea – फक्त paths/commands Windows-friendly
+                        sh """
+                        sshpass -p '${TARGET_PASSWORD}' \
+                          ssh -o StrictHostKeyChecking=no ${TARGET_USER}@${TARGET_IP} "
+                            docker login $REGISTRY && \\
+                            docker-compose -f /tmp/docker-compose.yml pull && \\
+                            docker-compose -f /tmp/docker-compose.yml up -d
+                          "
+                        """
+                    }
                 }
             }
         }
@@ -232,10 +193,10 @@ volumes:
 
     post {
         success {
-            echo "🎉 Deployment Successful! Services running 🔥"
+            echo "✅ Remote machine (${TARGET_IP}) वर Postgres & Redis कंटेनर यशस्वीपणे deploy झाले."
         }
         failure {
-            echo "❌ Deployment Failed. Please check logs."
+            echo "❌ Pipeline failed – Jenkins console log मध्ये तपशील बघ."
         }
     }
 }
