@@ -80,13 +80,21 @@ pipeline {
             steps {
                 script {
                     def IP = TARGET_IP.trim()
-                    def dir  = (env.OS_TYPE == "linux") ? LINUX_DIR     : WIN_DIR
-                    def path = (env.OS_TYPE == "linux") ? LINUX_COMPOSE : WIN_COMPOSE
 
-                    sh """
-                        sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} "mkdir -p ${dir}"
-                        sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${IP}:${path}
-                    """
+                    if (env.OS_TYPE == "linux") {
+
+                        sh """
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} "mkdir -p ${LINUX_DIR}"
+                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${IP}:${LINUX_COMPOSE}
+                        """
+
+                    } else {  // WINDOWS FIX APPLIED
+
+                        sh """
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "New-Item -ItemType Directory -Force -Path '${WIN_DIR}'"
+                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${IP}:${WIN_COMPOSE}
+                        """
+                    }
                 }
             }
         }
@@ -97,10 +105,13 @@ pipeline {
                     def IP = TARGET_IP.trim()
 
                     if (env.OS_TYPE == "linux") {
+
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} "cd ${LINUX_DIR} && docker-compose up -d"
                         """
+
                     } else {
+
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "docker compose -f '${WIN_COMPOSE}' up -d"
                         """
@@ -116,6 +127,7 @@ pipeline {
                 def IP = TARGET_IP.trim()
 
                 if (env.OS_TYPE == "linux") {
+
                     sh """
                         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} "
                             echo '===== SYSTEM SUMMARY (LINUX) =====';
@@ -127,7 +139,9 @@ pipeline {
                             echo '==================================';
                         "
                     """
+
                 } else {
+
                     sh """
                         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "
                             Write-Host '===== SYSTEM SUMMARY (WINDOWS) =====';
@@ -151,7 +165,7 @@ pipeline {
 
 
 /* --------------------------
-   LINUX SETUP
+   LINUX CONFIG
 -------------------------- */
 def configureLinux() {
     def IP = TARGET_IP.trim()
@@ -174,7 +188,7 @@ def configureLinux() {
 }
 
 /* --------------------------
-   WINDOWS SETUP
+   WINDOWS CONFIG
 -------------------------- */
 def configureWindows() {
     def IP = TARGET_IP.trim()
@@ -183,13 +197,22 @@ def configureWindows() {
         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "
             Write-Host 'Configuring Windows...';
 
-            if (Get-Service sshd -ErrorAction SilentlyContinue) {
+            \$svc = Get-Service sshd -ErrorAction SilentlyContinue
+            if (\$svc) {
                 Set-Service sshd -StartupType Automatic;
                 Start-Service sshd;
             }
 
-            if (!(docker --version)) {
-                winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements;
+            if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH' -ErrorAction SilentlyContinue)) {
+                New-NetFirewallRule -DisplayName 'OpenSSH' -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow
+            }
+
+            if (-not (docker --version)) {
+                if (Get-Command winget -ErrorAction SilentlyContinue) {
+                    winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
+                } else {
+                    Write-Host 'winget not available!';
+                }
             }
 
             Write-Host 'Windows Ready ✔';
