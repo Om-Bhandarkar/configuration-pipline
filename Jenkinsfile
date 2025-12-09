@@ -8,7 +8,7 @@ pipeline {
     }
 
     environment {
-        IMAGE_REGISTRY = "your-private-registry.com"
+        IMAGE_REGISTRY = "http://192.168.1.8:5000"
         POSTGRES_IMAGE = "postgres:latest"
         REDIS_IMAGE    = "redis:latest"
     }
