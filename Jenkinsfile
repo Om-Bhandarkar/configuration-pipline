@@ -8,271 +8,269 @@ pipeline {
     }
 
     environment {
-        OS_TYPE        = ""
-        LINUX_DIR      = "/infra"
-        LINUX_COMPOSE  = "/infra/docker-compose.yml"
-        WIN_DIR        = "C:/infra"
-        WIN_COMPOSE    = "C:/infra/docker-compose.yml"
+        LINUX_DIR     = "/infra"
+        LINUX_COMPOSE = "/infra/docker-compose.yml"
+        WIN_DIR       = "C:/infra"
+        WIN_COMPOSE   = "C:/infra/docker-compose.yml"
     }
 
     stages {
 
-        /* ---------------------------------------------------
-           0) Validate docker-compose.yml exists
-        --------------------------------------------------- */
-        stage("Validate docker-compose.yml") {
+        /* ------------------------------
+           0) Validate compose file 
+        ------------------------------ */
+        stage("Validate compose") {
             steps {
                 script {
                     if (!fileExists("docker-compose.yml")) {
-                        error "❌ docker-compose.yml workspace मध्ये सापडला नाही!"
+                        error "❌ docker-compose.yml missing!"
                     }
                 }
             }
         }
 
-        /* ---------------------------------------------------
-           1) Ensure sshpass installed on Jenkins agent
-        --------------------------------------------------- */
+        /* ------------------------------
+           1) Ensure sshpass installed
+        ------------------------------ */
         stage("Check sshpass") {
             steps {
                 script {
-                    if (sh(returnStatus: true, script: "command -v sshpass >/dev/null 2>&1") != 0) {
-                        error """
-❌ ERROR: Jenkins agent वर sshpass install नाही.
-
-Install:
-  sudo apt install -y sshpass
-  OR
-  sudo yum install -y sshpass
-                        """
+                    if (sh(returnStatus: true, script: "command -v sshpass") != 0) {
+                        error "❌ sshpass missing. Install: sudo apt/yum install sshpass"
                     }
                 }
             }
         }
 
-        /* ---------------------------------------------------
-           2) SSH Connection Test
-        --------------------------------------------------- */
-        stage("Check SSH Connection") {
-            steps {
-                sh """
-                    sshpass -p "${SSH_PASS}" \
-                    ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=no \
-                        ${SSH_USER}@${TARGET_IP} "echo 'SSH Connected ✔'" 
-                """
-            }
-        }
-
-        /* ---------------------------------------------------
-           3) Detect OS
-        --------------------------------------------------- */
+        /* ------------------------------
+           2) Detect Operating System
+        ------------------------------ */
         stage("Detect OS") {
             steps {
                 script {
-                    echo "🔍 Detecting remote OS..."
+                    echo "🔍 Detecting OS..."
 
-                    def lc = sh(returnStdout: true, script: """
-                        sshpass -p "${SSH_PASS}" \
-                        ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "uname 2>/dev/null" || true
-                    """).trim().toLowerCase()
+                    def isLinux = sh(
+                        returnStatus: true,
+                        script: '''
+                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" "uname" >/dev/null 2>&1
+                        '''
+                    ) == 0
 
-                    if (lc.contains("linux")) {
-                        OS_TYPE = "linux"
+                    if (isLinux) {
+                        env.OS_TYPE = "linux"
                         echo "🟢 Linux detected"
                         return
                     }
 
-                    def wc = sh(returnStdout: true, script: """
-                        sshpass -p "${SSH_PASS}" \
-                        ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                        "powershell -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\"" || ""
-                    """).trim().toLowerCase()
+                    def isWindows = sh(
+                        returnStatus: true,
+                        script: '''
+                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" \
+                                "powershell -Command \"(Get-CimInstance Win32_OperatingSystem).Caption\"" >/dev/null 2>&1
+                        '''
+                    ) == 0
 
-                    if (wc.contains("windows")) {
-                        OS_TYPE = "windows"
-                        echo "🟦 Windows detected: ${wc}"
+                    if (isWindows) {
+                        env.OS_TYPE = "windows"
+                        echo "🟦 Windows detected"
                         return
                     }
 
-                    error "❌ Unable to detect OS!"
+                    error "❌ Unknown OS!"
                 }
             }
         }
 
-        /* ---------------------------------------------------
-           4) Linux: Ensure SSH service + firewall
-        --------------------------------------------------- */
-        stage("Setup SSH & Firewall (Linux)") {
-            when { expression { OS_TYPE == "linux" } }
-            steps {
-                sh """
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
-                        set -e
-                        echo "🔐 Configuring SSH (Linux)..."
-
-                        if ! command -v sshd >/dev/null; then
-                            echo "Installing OpenSSH server..."
-                            apt-get update -y || yum update -y
-                            apt-get install -y openssh-server || yum install -y openssh-server
-                        fi
-
-                        systemctl enable ssh || systemctl enable sshd || true
-                        systemctl start ssh || systemctl start sshd || true
-
-                        if command -v ufw >/dev/null; then
-                            ufw allow 22 || true
-                            ufw reload || true
-                        elif command -v firewall-cmd >/dev/null; then
-                            firewall-cmd --add-port=22/tcp --permanent || true
-                            firewall-cmd --reload || true
-                        fi
-
-                        echo "SSH Ready ✔"
-                    '
-                """
-            }
-        }
-
-        /* ---------------------------------------------------
-           5) Windows: Ensure SSH running (SSH must be installed)
-        --------------------------------------------------- */
-        stage("Setup SSH (Windows)") {
-            when { expression { OS_TYPE == "windows" } }
-            steps {
-                sh """
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                    "powershell -Command \\
-                        \\"Write-Host 'Checking SSH...'; \\
-                        \$svc = Get-Service sshd -ErrorAction SilentlyContinue; \\
-                        if (\$svc) { \\
-                            Set-Service sshd -StartupType Automatic; Start-Service sshd; \\
-                            if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH')) { \\
-                                New-NetFirewallRule -DisplayName 'OpenSSH' -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow; \\
-                            } \\
-                            Write-Host 'SSH Ready ✔'; \\
-                        } else { \\
-                            Write-Host '❌ OpenSSH installed नाही. First time manually install करणे आवश्यक.'; \\
-                        }\\""
-                """
-            }
-        }
-
-        /* ---------------------------------------------------
-           6) Install Docker + Compose (Linux)
-        --------------------------------------------------- */
-        stage("Docker Setup (Linux)") {
-            when { expression { OS_TYPE == "linux" } }
-            steps {
-                sh """
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
-                        set -e
-                        echo "🐳 Docker Setup (Linux)..."
-
-                        if ! command -v docker >/dev/null; then
-                            echo "Installing Docker..."
-                            apt-get install -y docker.io || yum install -y docker || dnf install -y docker \
-                                || zypper install -y docker || curl -fsSL https://get.docker.com | sh
-                            systemctl enable docker || true
-                            systemctl start docker || true
-                        fi
-
-                        echo "Docker Version:"
-                        docker --version
-
-                        if ! command -v docker-compose >/dev/null; then
-                            echo "Installing Docker Compose..."
-                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\$(uname -s)-\$(uname -m)" \
-                                -o /usr/local/bin/docker-compose
-                            chmod +x /usr/local/bin/docker-compose
-                        fi
-
-                        docker-compose --version
-                    '
-                """
-            }
-        }
-
-        /* ---------------------------------------------------
-           7) Windows: Install Docker Desktop (via winget)
-        --------------------------------------------------- */
-        stage("Docker Setup (Windows)") {
-            when { expression { OS_TYPE == "windows" } }
-            steps {
-                sh """
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                    "powershell -Command \\
-                        \\"if (!(docker --version)) { \\
-                            Write-Host 'Docker Install Attempt via winget...'; \\
-                            if (Get-Command winget -ErrorAction SilentlyContinue) { \\
-                                winget install -e --id Docker.DockerDesktop -h --accept-package-agreements --accept-source-agreements; \\
-                            } else { Write-Host '❌ winget not available, install Docker manually.' } \\
-                        } else { docker --version } \\
-                        if (docker compose version) { docker compose version } \\
-                        elseif (Get-Command docker-compose -ErrorAction SilentlyContinue) { docker-compose --version } \\
-                        else { Write-Host '❌ docker compose missing.' }\\""
-                """
-            }
-        }
-
-        /* ---------------------------------------------------
-           8) Upload docker-compose.yml
-        --------------------------------------------------- */
-        stage("Upload Compose File") {
+        /* ------------------------------
+           3) Configure OS Requirements
+        ------------------------------ */
+        stage("Configure System") {
             steps {
                 script {
-                    def targetPath = (OS_TYPE == "linux") ? LINUX_COMPOSE : WIN_COMPOSE
-                    def dirPath    = (OS_TYPE == "linux") ? LINUX_DIR     : WIN_DIR
+                    if (env.OS_TYPE == "linux") configureLinux()
+                    if (env.OS_TYPE == "windows") configureWindows()
+                }
+            }
+        }
 
-                    if (OS_TYPE == "linux") {
-                        sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${dirPath}"
-                            sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${targetPath}
-                        """
+        /* ------------------------------
+           4) Upload Compose File
+        ------------------------------ */
+        stage("Upload Compose") {
+            steps {
+                script {
+                    def dir  = env.OS_TYPE == "linux" ? LINUX_DIR     : WIN_DIR
+                    def path = env.OS_TYPE == "linux" ? LINUX_COMPOSE : WIN_COMPOSE
+
+                    sh '''
+                        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" "mkdir -p '"'''+dir+'''"'"
+                        sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no docker-compose.yml "$SSH_USER@$TARGET_IP":'"'''+path+'''"
+                    '''
+                }
+            }
+        }
+
+        /* ------------------------------
+           5) Run Docker Compose
+        ------------------------------ */
+        stage("Run Compose") {
+            steps {
+                script {
+                    if (env.OS_TYPE == "linux") {
+                        sh '''
+                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" "
+                                cd ''' + LINUX_DIR + ''' && docker-compose up -d
+                            "
+                        '''
                     } else {
-                        sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "powershell -Command \\"New-Item -Force -ItemType Directory -Path '${dirPath}'\\""
-                            sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${targetPath}
-                        """
+                        sh '''
+                            sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" `
+                                powershell -Command "docker compose -f ''' + WIN_COMPOSE + ''' up -d"
+                        '''
                     }
                 }
             }
         }
-
-        /* ---------------------------------------------------
-           9) Run Docker Compose (Linux)
-        --------------------------------------------------- */
-        stage("Run Compose (Linux)") {
-            when { expression { OS_TYPE == "linux" } }
-            steps {
-                sh """
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
-                        cd ${LINUX_DIR}
-                        docker-compose up -d
-                    '
-                """
-            }
-        }
-
-        /* ---------------------------------------------------
-           10) Run Docker Compose (Windows)
-        --------------------------------------------------- */
-        stage("Run Compose (Windows)") {
-            when { expression { OS_TYPE == "windows" } }
-            steps {
-                sh """
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                    "powershell -Command \\
-                        \\"if (docker compose version) { docker compose -f ${WIN_COMPOSE} up -d } \\
-                          elseif (Get-Command docker-compose -ErrorAction SilentlyContinue) { docker-compose -f ${WIN_COMPOSE} up -d } \\
-                          else { Write-Host '❌ Cannot run docker compose' }\\""
-                """
-            }
-        }
     }
 
+    /* ------------------------------
+       POST DEPLOYMENT SYSTEM SUMMARY
+    ------------------------------ */
     post {
-        success { echo "🎉 Infrastructure setup completed successfully!" }
-        failure { echo "❌ Deployment failed. Check logs." }
+        success {
+            echo "🎉 Deployment Complete!"
+            echo "📦 Collecting remote system information..."
+
+            script {
+                if (env.OS_TYPE == "linux") {
+
+                    /* ---- LINUX SUMMARY ---- */
+                    sh '''
+                        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" '
+                            echo "=============================="
+                            echo "  🔍 SYSTEM SUMMARY (LINUX)"
+                            echo "=============================="
+
+                            echo -e "\\n▶ Installed Tools:"
+                            docker --version 2>/dev/null
+                            docker-compose --version 2>/dev/null
+                            sshd -V 2>&1 | head -n 1
+
+                            echo -e "\\n▶ Active Ports:"
+                            ss -tulnp 2>/dev/null || netstat -tulnp
+
+                            echo -e "\\n▶ Running Containers:"
+                            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
+
+                            echo -e "\\n▶ docker-compose.yml Location:"
+                            echo "'${LINUX_COMPOSE}'"
+
+                            echo "=============================="
+                            echo "Summary Complete ✔"
+                            echo "=============================="
+                        '
+                    '''
+
+                } else {
+
+                    /* ---- WINDOWS SUMMARY ---- */
+                    sh '''
+                        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" `
+                            powershell -Command "
+                                Write-Host '==============================';
+                                Write-Host '  🔍 SYSTEM SUMMARY (WINDOWS)';
+                                Write-Host '==============================';
+
+                                Write-Host '\\n▶ Installed Tools:';
+                                if (Get-Command docker -ErrorAction SilentlyContinue) { docker --version }
+                                if (Get-Command docker-compose -ErrorAction SilentlyContinue) { docker-compose --version }
+                                if (Get-Service sshd -ErrorAction SilentlyContinue) { Write-Host 'OpenSSH: Installed ✔' }
+
+                                Write-Host '\\n▶ Active Listening Ports:';
+                                Get-NetTCPConnection -State Listen |
+                                    Select-Object LocalAddress,LocalPort,OwningProcess |
+                                    Sort-Object LocalPort | Format-Table -AutoSize
+
+                                Write-Host '\\n▶ Running Containers:';
+                                docker ps --format 'table {{.Names}}    {{.Image}}    {{.Ports}}'
+
+                                Write-Host '\\n▶ docker-compose.yml Location:';
+                                Write-Host '${WIN_COMPOSE}'
+
+                                Write-Host '==============================';
+                                Write-Host 'Summary Complete ✔';
+                                Write-Host '==============================';
+                            "
+                    '''
+                }
+            }
+        }
+
+        failure {
+            echo "❌ Deployment failed."
+        }
     }
+}
+
+/* =======================================================
+   🔧 Utility Functions
+======================================================== */
+
+def configureLinux() {
+    sh '''
+        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" '
+            set -e
+            echo "🔧 Preparing Linux System..."
+
+            # Install Docker if missing
+            if ! command -v docker >/dev/null; then
+                echo "Installing Docker..."
+                apt-get update -y || true
+                apt-get install -y docker.io || yum install -y docker || true
+                systemctl enable docker
+                systemctl start docker
+            fi
+            
+            # Install Docker Compose
+            if ! command -v docker-compose >/dev/null; then
+                curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m) \
+                    -o /usr/local/bin/docker-compose
+                chmod +x /usr/local/bin/docker-compose
+            fi
+
+            echo "Linux Ready ✔"
+        '
+    '''
+}
+
+def configureWindows() {
+    sh '''
+        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_USER@$TARGET_IP" `
+            powershell -Command "
+                Write-Host '🔧 Preparing Windows System...';
+
+                # Ensure SSH Running
+                $svc = Get-Service sshd -ErrorAction SilentlyContinue
+                if ($svc) {
+                    Set-Service sshd -StartupType Automatic; Start-Service sshd
+                    if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH')) {
+                        New-NetFirewallRule -DisplayName 'OpenSSH' -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow
+                    }
+                } else {
+                    Write-Host '❌ Install OpenSSH manually first.'
+                }
+
+                # Ensure Docker Installed
+                if (!(docker --version)) {
+                    if (Get-Command winget -ErrorAction SilentlyContinue) {
+                        winget install -e --id Docker.DockerDesktop -h --accept-package-agreements --accept-source-agreements
+                    } else {
+                        Write-Host '❌ Cannot install Docker (winget missing)'
+                    }
+                }
+
+                Write-Host 'Windows Ready ✔'
+            "
+    '''
 }
