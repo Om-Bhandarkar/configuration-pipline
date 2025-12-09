@@ -53,29 +53,27 @@ pipeline {
 
                     echo "🔍 Detecting OS on ${IP}..."
 
-                    // Linux check
                     def linuxCheck = sh(returnStatus:true, script: """
                         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} uname >/dev/null 2>&1
                     """) == 0
 
                     if (linuxCheck) {
                         env.OS_TYPE = "linux"
-                        echo "🟢 OS Detected: Linux"
+                        echo "🟢 Linux detected"
                         return
                     }
 
-                    // Windows check
                     def winCheck = sh(returnStatus:true, script: """
                         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "[System.Environment]::OSVersion.Platform" >/dev/null 2>&1
                     """) == 0
 
                     if (winCheck) {
                         env.OS_TYPE = "windows"
-                        echo "🟦 OS Detected: Windows"
+                        echo "🟦 Windows detected"
                         return
                     }
 
-                    error "❌ Unknown OS! Cannot continue."
+                    error "❌ Unknown OS!"
                 }
             }
         }
@@ -83,7 +81,7 @@ pipeline {
         /* -------------------------
            CONFIGURE SYSTEM
         ------------------------- */
-        stage("Configure OS") {
+        stage("Configure System") {
             steps {
                 script {
                     if (env.OS_TYPE == "linux") configureLinux()
@@ -98,14 +96,18 @@ pipeline {
         stage("Upload Compose File") {
             steps {
                 script {
+
                     def IP = TARGET_IP.trim()
 
                     if (env.OS_TYPE == "linux") {
+
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} "mkdir -p ${LINUX_DIR}"
                             sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${IP}:${LINUX_COMPOSE}
                         """
+
                     } else {
+
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "New-Item -ItemType Directory -Force -Path '${WIN_DIR}'"
                             sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${IP}:${WIN_COMPOSE}
@@ -124,10 +126,13 @@ pipeline {
                     def IP = TARGET_IP.trim()
 
                     if (env.OS_TYPE == "linux") {
+
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} "cd ${LINUX_DIR} && docker-compose up -d"
                         """
+
                     } else {
+
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "docker compose -f '${WIN_COMPOSE}' up -d"
                         """
@@ -146,6 +151,7 @@ pipeline {
                 def IP = TARGET_IP.trim()
 
                 if (env.OS_TYPE == "linux") {
+
                     sh """
                         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} "
                             echo '===== SYSTEM SUMMARY (LINUX) =====';
@@ -157,7 +163,9 @@ pipeline {
                             echo '==================================';
                         "
                     """
+
                 } else {
+
                     sh """
                         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "
                             Write-Host '===== SYSTEM SUMMARY (WINDOWS) =====';
@@ -179,9 +187,10 @@ pipeline {
     }
 }
 
-/* --------------------------
-   LINUX CONFIG
--------------------------- */
+
+/* ============================================================================
+   LINUX CONFIGURATION
+============================================================================ */
 def configureLinux() {
     def IP = TARGET_IP.trim()
 
@@ -190,13 +199,11 @@ def configureLinux() {
             if ! command -v docker >/dev/null; then
                 apt-get update -y || true;
                 apt-get install -y docker.io || yum install -y docker;
-                systemctl start docker || true;
-                systemctl enable docker || true;
             fi;
 
             if ! command -v docker-compose >/dev/null; then
                 curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m) \
-                    -o /usr/local/bin/docker-compose;
+                -o /usr/local/bin/docker-compose;
                 chmod +x /usr/local/bin/docker-compose;
             fi;
 
@@ -205,9 +212,10 @@ def configureLinux() {
     """
 }
 
-/* --------------------------
-   WINDOWS CONFIG
--------------------------- */
+
+/* ============================================================================
+   WINDOWS CONFIGURATION  (with Docker Credential Fix)
+============================================================================ */
 def configureWindows() {
     def IP = TARGET_IP.trim()
 
@@ -215,21 +223,26 @@ def configureWindows() {
         sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${IP} powershell -Command "
             Write-Host 'Configuring Windows...';
 
+            # Start SSH service
             \$svc = Get-Service sshd -ErrorAction SilentlyContinue
             if (\$svc) {
                 Set-Service sshd -StartupType Automatic;
                 Start-Service sshd;
             }
 
+            # Allow OpenSSH through firewall
             if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH' -ErrorAction SilentlyContinue)) {
                 New-NetFirewallRule -DisplayName 'OpenSSH' -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow
             }
 
-            if (-not (docker --version)) {
-                if (Get-Command winget -ErrorAction SilentlyContinue) {
-                    winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
-                } else {
-                    Write-Host 'winget not available!';
+            # Disable Docker Credential Store (Fixes: "A specified logon session does not exist")
+            \$jsonPath = \$env:USERPROFILE + '\\\\.docker\\\\config.json'
+            if (Test-Path \$jsonPath) {
+                \$json = Get-Content \$jsonPath -Raw | ConvertFrom-Json
+                if (\$json.credsStore) {
+                    \$json.PSObject.Properties.Remove('credsStore')
+                    \$json | ConvertTo-Json | Set-Content \$jsonPath
+                    Write-Host '✔ Docker credential store disabled'
                 }
             }
 
