@@ -34,12 +34,14 @@ pipeline {
                         else
                             echo "Docker already installed."
                         fi
-
+        
                         # Check Docker Compose
                         if ! command -v docker-compose >/dev/null 2>&1; then
                             echo "Docker Compose not found. Installing..."
-                            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+        
+                            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" \
                                  -o /usr/local/bin/docker-compose
+        
                             sudo chmod +x /usr/local/bin/docker-compose
                         else
                             echo "Docker Compose already installed."
@@ -49,6 +51,7 @@ pipeline {
                 }
             }
         }
+
 
         stage('Copy docker-compose.yml to Remote') {
             steps {
