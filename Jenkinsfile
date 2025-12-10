@@ -54,7 +54,7 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-           2) PULL → TAG → PUSH TO PRIVATE REGISTRY
+           2) PUSH IMAGES TO PRIVATE REGISTRY
         ---------------------------------------------------------- */
         stage("Push Images to Registry") {
             steps {
@@ -115,32 +115,35 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           4) UPLOAD COMPOSE (Windows + Linux)
+           4) UPLOAD COMPOSE FILE
         ---------------------------------------------------------- */
         stage("Upload Compose File") {
             steps {
                 script {
+
                     if (env.OS_TYPE == "linux") {
 
                         echo "📤 Uploading compose to Linux..."
 
                         sh """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${LINUX_DIR}"
-                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE}
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                                "mkdir -p ${LINUX_DIR}"
+
+                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml \
+                                ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE}
                         """
 
                     } else {
 
-                        echo "📤 Uploading compose + preparing directories on Windows..."
+                        echo "📤 Uploading compose to Windows & preparing Docker config..."
 
-                        // Create directories and upload compose file
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                powershell -NoProfile -Command "
-                                    New-Item -ItemType Directory -Force -Path '${WIN_DIR}' | Out-Null;
-                                    New-Item -ItemType Directory -Force -Path 'C:/docker-config' | Out-Null;
-                                    Set-Content -Path 'C:/docker-config/config.json' -Value '{}';
-                                "
+                              powershell -NoProfile -Command "
+                                New-Item -ItemType Directory -Force -Path 'C:/infra' | Out-Null;
+                                New-Item -ItemType Directory -Force -Path 'C:/docker-config' | Out-Null;
+                                Set-Content -Path 'C:/docker-config/config.json' -Value '{}';
+                              "
 
                             sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml \
                                 ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE}
@@ -151,8 +154,7 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           5) DEPLOY SERVICES
-           (Windows uses PS1 script for 100% reliability)
+           5) DEPLOY (LINUX + WINDOWS FIXED)
         ---------------------------------------------------------- */
         stage("Deploy Services") {
             steps {
@@ -173,27 +175,34 @@ volumes:
 
                     } else {
 
-                        echo "🚀 Creating Windows deploy.ps1 script..."
+                        echo "🚀 Creating deploy.ps1 for Windows..."
 
-                        // Local PS1 file creation
-                        writeFile file: "deploy.ps1", text: '''
-$Env:DOCKER_CONFIG = "C:/docker-config"
-Set-Location "C:/infra"
+                        writeFile file: "deploy.ps1", text: """
+\$Env:DOCKER_CONFIG = 'C:/docker-config'
 
+Set-Content -Path 'C:/docker-config/config.json' -Value '{
+  "credsStore": "",
+  "auths": {
+    "${REGISTRY_URL}": { "auth": "" }
+  }
+}'
+
+Write-Host "Using DOCKER_CONFIG: \$Env:DOCKER_CONFIG"
+
+Set-Location 'C:/infra'
+docker logout ${REGISTRY_URL} 2>\$null
 docker compose down
 docker compose pull
 docker compose up -d
-'''
+"""
 
-                        // Upload script
                         sh """
                             sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no deploy.ps1 \
                                 ${SSH_USER}@${TARGET_IP}:'C:/infra/deploy.ps1'
                         """
 
-                        echo "🚀 Executing deploy.ps1 on Windows..."
+                        echo "🚀 Running deploy.ps1..."
 
-                        // Execute remotely
                         sh """
                             sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
                                 powershell -NoProfile -ExecutionPolicy Bypass -File 'C:/infra/deploy.ps1'
@@ -204,14 +213,27 @@ docker compose up -d
         }
 
         /* ----------------------------------------------------------
-           6) VERIFY RUNNING SERVICES
+           6) VERIFY (WINDOWS FORMAT FIXED)
         ---------------------------------------------------------- */
         stage("Verify Deployment") {
             steps {
-                sh """
-                    sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                    "docker ps --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}'"
-                """
+                script {
+
+                    if (env.OS_TYPE == "windows") {
+
+                        sh """
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                              powershell -NoProfile -Command "docker ps --format \\\"table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\\""
+                        """
+
+                    } else {
+
+                        sh """
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                              "docker ps --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}'"
+                        """
+                    }
+                }
             }
         }
     }
