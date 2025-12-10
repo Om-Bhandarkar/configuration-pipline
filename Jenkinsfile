@@ -21,69 +21,66 @@ pipeline {
 
     stages {
 
-        /* ---------------------------------------------------------------
-           1) Detect Remote OS (Linux / Windows)
-        ---------------------------------------------------------------- */
+        /* ----------------------------------------------------------
+           DETECT REMOTE OS (LINUX OR WINDOWS)
+        ---------------------------------------------------------- */
         stage("Detect Remote OS") {
             steps {
                 script {
-                    echo "🔍 Detecting remote OS..."
+                    echo "🔍 Detecting Remote OS..."
 
+                    // Try Linux
                     def linuxCheck = sh(returnStatus: true, script: """
                         sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "uname -s"
                     """)
 
                     if (linuxCheck == 0) {
                         env.OS_TYPE = "linux"
-                        echo "✅ Remote OS Detected: Linux"
+                        echo "✅ Remote OS Detected: LINUX"
                     } else {
-
+                        // Try Windows
                         def winCheck = sh(returnStatus: true, script: """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "powershell -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
+                            "powershell -NoProfile -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
                         """)
+
                         if (winCheck == 0) {
                             env.OS_TYPE = "windows"
-                            echo "🟦 Remote OS Detected: Windows"
+                            echo "🟦 Remote OS Detected: WINDOWS"
                         } else {
-                            error "❌ Could not detect OS"
+                            error "❌ Could not detect remote OS"
                         }
                     }
                 }
             }
         }
 
-        /* ---------------------------------------------------------------
-           2) Pull → Tag → Push to Private Registry
-        ---------------------------------------------------------------- */
+        /* ----------------------------------------------------------
+           PULL → TAG → PUSH IMAGES TO PRIVATE REGISTRY
+        ---------------------------------------------------------- */
         stage("Push Images to Registry") {
             steps {
-                script {
-                    echo "🐳 Pulling official images..."
+                sh """
+                    docker pull postgres:latest
+                    docker pull redis:latest
 
-                    sh """
-                        docker pull postgres:latest
-                        docker pull redis:latest
+                    docker tag postgres:latest ${REGISTRY_URL}/infra/postgres:latest
+                    docker tag redis:latest ${REGISTRY_URL}/infra/redis:latest
 
-                        echo "🔖 Tagging images for private registry..."
-                        docker tag postgres:latest ${REGISTRY_URL}/infra/postgres:latest
-                        docker tag redis:latest ${REGISTRY_URL}/infra/redis:latest
-
-                        echo "📤 Pushing images to private registry..."
-                        docker push ${REGISTRY_URL}/infra/postgres:latest
-                        docker push ${REGISTRY_URL}/infra/redis:latest
-                    """
-                }
+                    echo "📤 Pushing images to private registry..."
+                    docker push ${REGISTRY_URL}/infra/postgres:latest
+                    docker push ${REGISTRY_URL}/infra/redis:latest
+                """
             }
         }
 
-        /* ---------------------------------------------------------------
-           3) Create docker-compose.yml with injected registry IP
-        ---------------------------------------------------------------- */
+        /* ----------------------------------------------------------
+           CREATE docker-compose.yml
+        ---------------------------------------------------------- */
         stage("Create Compose File") {
             steps {
                 script {
-                    def composeYaml = """
+                    def composeText = """
 version: "3.8"
 
 services:
@@ -116,34 +113,33 @@ services:
 volumes:
   registry_data:
 """
-                    writeFile file: "docker-compose.yml", text: composeYaml
+                    writeFile file: "docker-compose.yml", text: composeText
                 }
             }
         }
 
-        /* ---------------------------------------------------------------
-           4) Upload docker-compose.yml (Linux or Windows)
-        ---------------------------------------------------------------- */
+        /* ----------------------------------------------------------
+           UPLOAD docker-compose.yml (WINDOWS + LINUX)
+        ---------------------------------------------------------- */
         stage("Upload Compose File") {
             steps {
                 script {
+
                     if (env.OS_TYPE == "linux") {
 
-                        echo "📤 Uploading compose file to Linux remote..."
+                        echo "📤 Uploading compose file to LINUX..."
                         sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "mkdir -p ${LINUX_COMPOSE_DIR}"
-
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${LINUX_COMPOSE_DIR}"
                             sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \
                                 ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE_FILE}
                         """
 
                     } else {
 
-                        echo "📤 Uploading compose file to Windows remote..."
+                        echo "📤 Uploading compose file to WINDOWS..."
                         sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} ^
-                                "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}'\\""
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                                "powershell -NoProfile -Command \\"New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}'\\""
 
                             sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \
                                 ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE_FILE}
@@ -153,14 +149,16 @@ volumes:
             }
         }
 
-        /* ---------------------------------------------------------------
-           5) Deploy Services on Remote (Linux / Windows)
-        ---------------------------------------------------------------- */
+        /* ----------------------------------------------------------
+           DEPLOY SERVICES (WINDOWS + LINUX)
+        ---------------------------------------------------------- */
         stage("Deploy Services") {
             steps {
                 script {
+
                     if (env.OS_TYPE == "linux") {
-                        echo "🚀 Deploying on Linux..."
+
+                        echo "🚀 Deploying on LINUX..."
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
                                 cd ${LINUX_COMPOSE_DIR}
@@ -171,19 +169,20 @@ volumes:
                         """
 
                     } else {
-                        echo "🚀 Deploying on Windows..."
+
+                        echo "🚀 Deploying on WINDOWS..."
                         sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} ^
-                                "powershell -Command \\"cd '${WIN_COMPOSE_DIR}'; docker compose down; docker compose pull; docker compose up -d\\""
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                                "powershell -NoProfile -Command \\"cd '${WIN_COMPOSE_DIR}'; docker compose down; docker compose pull; docker compose up -d\\""
                         """
                     }
                 }
             }
         }
 
-        /* ---------------------------------------------------------------
-           6) Verify Docker containers running on remote
-        ---------------------------------------------------------------- */
+        /* ----------------------------------------------------------
+           VERIFY RUNNING SERVICES
+        ---------------------------------------------------------- */
         stage("Verify Deployment") {
             steps {
                 sh """
