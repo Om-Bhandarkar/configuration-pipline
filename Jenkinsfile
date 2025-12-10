@@ -2,9 +2,9 @@ pipeline {
     agent any
 
     environment {
-        REMOTE_IP = credentials('REMOTE_IP')
-        SSH_USER  = credentials('SSH_USERNAME')
-        SSH_PASS  = credentials('SSH_PASSWORD')
+        REMOTE_IP = credentials('192.168.1.8')
+        SSH_USER  = credentials('jtsm')
+        SSH_PASS  = credentials('espl@2017')
     }
 
     stages {
