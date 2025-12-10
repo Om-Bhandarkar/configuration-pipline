@@ -2,241 +2,169 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'TARGET_IP', description: 'Remote Server IP')
-        string(name: 'SSH_USER', defaultValue: 'root', description: 'SSH Username')
-        password(name: 'SSH_PASS', description: 'SSH Password')
+        string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote machine IP')
+        string(name: 'REMOTE_USER', defaultValue: '', description: 'SSH Username')
+        credentials(name: 'SSH_CRED', description: 'SSH Password or SSH Private Key')
     }
 
     environment {
-        OS_TYPE = ""
-        REGISTRY_URL = "${TARGET_IP}:5000"
-
-        LINUX_DIR  = "/infra"
-        LINUX_COMPOSE = "/infra/docker-compose.yml"
-
-        WIN_DIR    = "C:/infra"
-        WIN_COMPOSE = "C:/infra/docker-compose.yml"
+        COMPOSE_FILE = "docker-compose.yml"
+        REGISTRY = "your-docker-registry.com"
+        PROJECT = "infra-services"
     }
 
     stages {
 
-        /* -------------------------------------------------------------
-           DETECT REMOTE OS
-        ------------------------------------------------------------- */
-        stage("Detect Remote OS") {
+        /* -------------------------- 1. SSH CONNECTIVITY TEST -------------------------- */
+        stage('Validate SSH Connection') {
             steps {
                 script {
-                    echo "🔍 Detecting Remote OS..."
+                    echo "Testing SSH connection to ${params.REMOTE_IP}..."
 
-                    def linuxCheck = sh(returnStatus: true, script: """
-                        sshpass -p '${SSH_PASS}' \
-                        ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} uname -s
-                    """)
+                    def result = sshCommand(
+                        remote: [
+                            host: params.REMOTE_IP,
+                            user: params.REMOTE_USER,
+                            credentialsId: 'SSH_CRED'
+                        ],
+                        command: "echo connected"
+                    )
 
-                    if (linuxCheck == 0) {
-                        env.OS_TYPE = "linux"
-                        echo "🐧 OS Detected: Linux"
-
-                    } else {
-                        def winCheck = sh(returnStatus: true, script: """
-                            sshpass -p '${SSH_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                              powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).Caption"
-                        """)
-
-                        if (winCheck == 0) {
-                            env.OS_TYPE = "windows"
-                            echo "🟦 OS Detected: Windows"
-                        } else {
-                            error "❌ Unable to detect remote OS"
-                        }
+                    if (!result.contains("connected")) {
+                        error "SSH failed! पुढे pipeline चालू शकत नाही."
                     }
+
+                    echo "SSH OK ✓"
                 }
             }
         }
 
-        /* -------------------------------------------------------------
-           PUSH IMAGES INTO PRIVATE REGISTRY
-        ------------------------------------------------------------- */
-        stage("Push Images to Registry") {
-            steps {
-                sh """
-                    docker pull postgres:latest
-                    docker pull redis:latest
-
-                    docker tag postgres:latest ${REGISTRY_URL}/infra/postgres:latest
-                    docker tag redis:latest    ${REGISTRY_URL}/infra/redis:latest
-
-                    docker push ${REGISTRY_URL}/infra/postgres:latest
-                    docker push ${REGISTRY_URL}/infra/redis:latest
-                """
-            }
-        }
-
-        /* -------------------------------------------------------------
-           CREATE docker-compose.yml
-        ------------------------------------------------------------- */
-        stage("Create Compose File") {
+        /* -------------------------- 2. DETECT REMOTE OS -------------------------- */
+        stage('Detect Remote Operating System') {
             steps {
                 script {
-                    def compose = """
-services:
+                    echo "Detecting OS..."
 
-  registry:
-    container_name: private-registry
-    image: registry:2
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
-    volumes:
-      - registry_data:/var/lib/registry
+                    def osCheck = sshCommand(
+                        remote: [host: params.REMOTE_IP, user: params.REMOTE_USER, credentialsId: 'SSH_CRED'],
+                        command: "uname || ver"
+                    )
 
-  postgres:
-    container_name: infra-postgres
-    image: ${REGISTRY_URL}/infra/postgres:latest
-    environment:
-      POSTGRES_PASSWORD: example
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
+                    if (osCheck.toLowerCase().contains("linux")) {
+                        env.OS_TYPE = "LINUX"
+                    } else if (osCheck.toLowerCase().contains("windows")) {
+                        env.OS_TYPE = "WINDOWS"
+                    } else {
+                        error "Unknown OS detected!"
+                    }
 
-  redis:
-    container_name: infra-redis
-    image: ${REGISTRY_URL}/infra/redis:latest
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-
-volumes:
-  registry_data:
-"""
-                    writeFile file: "docker-compose.yml", text: compose
+                    echo "Remote OS = ${env.OS_TYPE}"
                 }
             }
         }
 
-        /* -------------------------------------------------------------
-           UPLOAD COMPOSE FILE (LINUX + WINDOWS)
-        ------------------------------------------------------------- */
-        stage("Upload Compose File") {
+        /* -------------------------- 3. OS-SPECIFIC SETUP -------------------------- */
+        stage('Setup Remote OS for Docker & SSH') {
             steps {
                 script {
-                    if (env.OS_TYPE == "linux") {
 
-                        sh """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${LINUX_DIR}"
-                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE}
+                    if (env.OS_TYPE == "LINUX") {
+                        echo "Running Linux setup..."
+
+                        sshCommand remote: remoteConfig(), command: """
+                            sudo apt-get update -y
+                            sudo apt-get install -y openssh-server ufw curl
+                            sudo ufw allow 22
+                            curl -fsSL https://get.docker.com | sudo sh
+                            sudo usermod -aG docker ${params.REMOTE_USER}
+                            sudo systemctl enable docker
+                            sudo systemctl start docker
                         """
 
                     } else {
+                        echo "Running Windows setup..."
 
-                        sh """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} powershell -NoProfile -Command "
-                                New-Item -ItemType Directory -Force -Path 'C:/infra' | Out-Null;
-                                New-Item -ItemType Directory -Force -Path 'C:/docker-config' | Out-Null;
-                            "
-                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE}
+                        sshCommand remote: remoteConfig(), command: """
+                            powershell Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+                            powershell Start-Service sshd
+                            powershell Set-Service -Name sshd -StartupType 'Automatic'
+                            powershell New-NetFirewallRule -Name sshd -DisplayName 'SSH' -Protocol TCP -LocalPort 22 -Action Allow
+                            
+                            choco install docker-desktop -y
+                            powershell Start-Service com.docker.service
                         """
                     }
                 }
             }
         }
 
-        /* -------------------------------------------------------------
-           DEPLOY SERVICES (LINUX + WINDOWS)
-        ------------------------------------------------------------- */
-        stage("Deploy Services") {
+        /* -------------------------- 4. Build & Push Images -------------------------- */
+        stage('Build & Push Containers') {
             steps {
                 script {
-
-                    /* ---------------------- LINUX ---------------------- */
-                    if (env.OS_TYPE == "linux") {
-
-                        sh """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
-                                cd ${LINUX_DIR}
-                                docker compose down || true
-                                docker compose pull
-                                docker compose up -d
-                            '
-                        """
-
-                    /* ---------------------- WINDOWS ---------------------- */
-                    } else {
-
-                        echo "📄 Creating deploy.ps1..."
-
-                        writeFile file: "deploy.ps1", text: """
-Write-Host "🔧 Setting Docker Config..."
-
-\$Env:DOCKER_CONFIG = "C:/docker-config"
-
-@'
-{
-  "auths": {
-    "${REGISTRY_URL}": {}
-  },
-  "credsStore": ""
-}
-'@ | Set-Content -Path "C:/docker-config/config.json"
-
-Write-Host "✔ DOCKER_CONFIG loaded"
-
-Stop-Service com.docker.service
-Start-Service com.docker.service
-Start-Sleep -Seconds 5
-
-Write-Host "🚀 Deploying Docker Compose..."
-
-Set-Location "C:/infra"
-
-docker compose down --remove-orphans
-docker compose pull --ignore-pull-failures
-docker compose up -d
-
-Write-Host "✔ Deployment Completed"
-"""
-
-                        sh """
-                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no deploy.ps1 \
-                                ${SSH_USER}@${TARGET_IP}:'C:/infra/deploy.ps1'
-                        """
-
-                        sh """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                powershell -NoProfile -ExecutionPolicy Bypass -File 'C:/infra/deploy.ps1'
-                        """
-                    }
+                    sh """
+                        docker-compose -f ${COMPOSE_FILE} build
+                        docker login ${REGISTRY}
+                        docker-compose -f ${COMPOSE_FILE} push
+                    """
                 }
             }
         }
 
-        /* -------------------------------------------------------------
-           VERIFY DEPLOYMENT
-        ------------------------------------------------------------- */
-        stage("Verify Deployment") {
+        /* -------------------------- 5. Transfer Compose File -------------------------- */
+        stage('Transfer Compose File to Remote') {
+            steps {
+                sshPut(
+                    remote: remoteConfig(),
+                    from: "${COMPOSE_FILE}",
+                    into: "/home/${params.REMOTE_USER}/${COMPOSE_FILE}"
+                )
+            }
+        }
+
+        /* -------------------------- 6. Remote Deployment -------------------------- */
+        stage('Deploy on Remote Machine') {
             steps {
                 script {
-                    if (env.OS_TYPE == "windows") {
-                        sh """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                              powershell -NoProfile -Command "docker ps --format \\"table {{.Names}},{{.Image}},{{.Status}}\\""
-                        """
-                    } else {
-                        sh """
-                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                              "docker ps --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}'"
-                        """
+                    sshCommand remote: remoteConfig(), command: """
+                        docker login ${REGISTRY}
+                        docker compose -f ${COMPOSE_FILE} pull
+                        docker compose -f ${COMPOSE_FILE} up -d
+                    """
+                }
+            }
+        }
+
+        /* -------------------------- 7. Verify Deployment -------------------------- */
+        stage('Verify Services') {
+            steps {
+                script {
+                    def ps = sshCommand(remote: remoteConfig(), command: "docker ps")
+                    echo ps
+                    if (!ps.contains("postgres") || !ps.contains("redis")) {
+                        error "Containers NOT running properly!"
                     }
                 }
             }
         }
     }
 
+    /* -------------------------- POST ACTIONS -------------------------- */
     post {
-        always {
-            sh "rm -f docker-compose.yml || true"
-            sh "rm -f deploy.ps1 || true"
+        success {
+            echo "Pipeline SUCCESSFUL 🎉"
+        }
+        failure {
+            echo "Pipeline FAILED ❌ — logs पाहा."
         }
     }
+}
+
+/* -------------------------- Helper Function -------------------------- */
+def remoteConfig() {
+    return [
+        host: params.REMOTE_IP,
+        user: params.REMOTE_USER,
+        credentialsId: 'SSH_CRED'
+    ]
 }
