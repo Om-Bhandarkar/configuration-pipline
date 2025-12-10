@@ -29,6 +29,7 @@ pipeline {
                 script {
                     echo "🔍 Detecting Remote OS..."
 
+                    // Linux check
                     def linuxCheck = sh(returnStatus: true, script: """
                         sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "uname -s"
                     """)
@@ -37,10 +38,10 @@ pipeline {
                         env.OS_TYPE = "linux"
                         echo "✅ Remote OS Detected: LINUX"
                     } else {
-
+                        // Windows check
                         def winCheck = sh(returnStatus: true, script: """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "powershell -NoProfile -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \\
+                            "powershell -NoProfile -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
                         """)
 
                         if (winCheck == 0) {
@@ -55,7 +56,7 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-           2) PULL → TAG → PUSH to PRIVATE REGISTRY
+           2) PULL → TAG → PUSH IMAGES TO PRIVATE REGISTRY
         ---------------------------------------------------------- */
         stage("Push Images to Registry") {
             steps {
@@ -116,34 +117,33 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           4) UPLOAD docker-compose.yml (Linux + Windows)
+           4) UPLOAD docker-compose.yml (Windows + Linux)
         ---------------------------------------------------------- */
         stage("Upload Compose File") {
             steps {
                 script {
                     if (env.OS_TYPE == "linux") {
 
-                        echo "📤 Uploading compose to LINUX..."
+                        echo "📤 Uploading compose file to LINUX..."
                         sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "mkdir -p ${LINUX_COMPOSE_DIR}"
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${LINUX_COMPOSE_DIR}"
 
-                            sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \
+                            sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \\
                                 ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE_FILE}
                         """
 
                     } else {
 
-                        echo "📤 Uploading compose to WINDOWS & preparing Docker config..."
+                        echo "📤 Uploading compose file to WINDOWS..."
                         sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "powershell -NoProfile -Command \\
-                                    \\"New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}' | Out-Null; \\
-                                      New-Item -ItemType Directory -Force -Path 'C:/docker-config' | Out-Null; \\
-                                      Set-Content -Path 'C:/docker-config/config.json' -Value '{}'\\"
-                                "
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \\
+                            "powershell -NoProfile -Command \\" 
+                                New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}' | Out-Null;
+                                New-Item -ItemType Directory -Force -Path 'C:/docker-config' | Out-Null;
+                                Set-Content -Path 'C:/docker-config/config.json' -Value '{}';
+                            \\""
 
-                            sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \
+                            sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \\
                                 ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE_FILE}
                         """
                     }
@@ -152,7 +152,7 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           5) DEPLOY (Linux + Windows)
+           5) DEPLOY SERVICES (Windows + Linux)
         ---------------------------------------------------------- */
         stage("Deploy Services") {
             steps {
@@ -174,14 +174,14 @@ volumes:
 
                         echo "🚀 Deploying on WINDOWS..."
                         sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                            "powershell -NoProfile -Command \"
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \\
+                            "powershell -NoProfile -Command \\"& {
                                 \$Env:DOCKER_CONFIG = 'C:/docker-config';
                                 Set-Location 'C:/infra';
                                 docker compose down;
                                 docker compose pull;
                                 docker compose up -d;
-                            \""
+                            }\\""
                         """
                     }
                 }
@@ -194,8 +194,8 @@ volumes:
         stage("Verify Deployment") {
             steps {
                 sh """
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                        "docker ps --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}'"
+                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \\
+                    "docker ps --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}'"
                 """
             }
         }
