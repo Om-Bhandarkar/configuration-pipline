@@ -2,90 +2,94 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote machine IP')
+        string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote Machine IP')
         string(name: 'REMOTE_USER', defaultValue: '', description: 'SSH Username')
-        string(name: 'REMOTE_PASS', defaultValue: '', description: 'SSH Password')
+        string(name: 'REMOTE_PASS', defaultValue: '', description: 'SSH Password')   // Visible password field
     }
 
     environment {
-        REGISTRY = "192.168.1.10:5000"   // <-- इथे तुझ्या Jenkins मशीनचा IP टाक
-        COMPOSE_FILE = "./docker-compose.yml"
+        REGISTRY = "192.168.1.10:5000"   // <-- Your Jenkins + Registry machine IP
+        COMPOSE_FILE = "docker-compose.yml"
     }
 
     stages {
 
-        /* -------------------- 1. Test SSH -------------------- */
+        /* ---------- 1. SSH VALIDATION ---------- */
         stage('Validate SSH Connection') {
             steps {
                 script {
                     sh """
-                        sshpass -p '${REMOTE_PASS}' \
-                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "echo connected"
+                        sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "echo CONNECTED"
                     """
                 }
             }
         }
 
-        /* -------------------- 2. Detect OS -------------------- */
-        stage('Detect OS') {
+        /* ---------- 2. DETECT OS ---------- */
+        stage('Detect Remote OS') {
             steps {
                 script {
-                    def result = sh(
+                    def output = sh(
                         script: """
                             sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "uname || ver"
                         """,
                         returnStdout: true
                     ).trim()
 
-                    if (result.toLowerCase().contains("linux")) {
+                    if (output.toLowerCase().contains("linux")) {
                         env.OS_TYPE = "LINUX"
                     } else {
                         env.OS_TYPE = "WINDOWS"
                     }
-                    echo "Detected Remote OS = ${env.OS_TYPE}"
+
+                    echo "Remote OS detected → ${env.OS_TYPE}"
                 }
             }
         }
 
-        /* -------------------- 3. Setup OS -------------------- */
-        stage('Setup Remote System') {
+        /* ---------- 3. FIX HOME DIR ---------- */
+        stage('Prepare Remote User Home Directory') {
             steps {
                 script {
+                    sh """
+                        sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} '
+                            if [ ! -d "/home/${REMOTE_USER}" ]; then
+                                sudo mkdir -p /home/${REMOTE_USER};
+                                sudo chown ${REMOTE_USER}:${REMOTE_USER} /home/${REMOTE_USER};
+                            fi
+                        '
+                    """
+                }
+            }
+        }
 
+        /* ---------- 4. SETUP DOCKER (Linux only) ---------- */
+        stage('Setup Docker on Remote Machine') {
+            steps {
+                script {
                     if (env.OS_TYPE == "LINUX") {
                         sh """
                             sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} '
-                                sudo apt update -y &&
-                                sudo apt install -y curl ufw &&
-                                sudo ufw allow 22 &&
+                                sudo apt-get update -y &&
+                                sudo apt-get install -y curl &&
                                 curl -fsSL https://get.docker.com | sudo sh &&
-                                sudo usermod -aG docker ${REMOTE_USER}
+                                sudo usermod -aG docker ${REMOTE_USER} &&
+                                sudo systemctl restart docker
                             '
-                        """
-                    } else {
-                        sh """
-                            sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "
-                                powershell Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0;
-                                powershell Start-Service sshd;
-                                powershell New-NetFirewallRule -Name sshd -Protocol TCP -LocalPort 22 -Action Allow;
-                                choco install docker-desktop -y;
-                                powershell Start-Service com.docker.service
-                            "
                         """
                     }
                 }
             }
         }
 
-        /* -------------------- 4. Build & Push Images -------------------- */
-        stage('Build & Push Images') {
+        /* ---------- 5. BUILD + TAG + PUSH ---------- */
+        stage('Build & Push Docker Images') {
             steps {
                 script {
                     sh """
-                        echo "Building images..."
                         docker-compose -f ${COMPOSE_FILE} build
 
-                        echo "Tagging & Pushing to Registry..."
+                        # Tag + push each image from compose
                         docker-compose -f ${COMPOSE_FILE} images --quiet | while read IMG; do
                             NAME=\$(echo \$IMG | awk -F '/' '{print \$NF}')
                             docker tag \$IMG ${REGISTRY}/\$NAME
@@ -96,50 +100,47 @@ pipeline {
             }
         }
 
-        /* -------------------- 5. Copy Compose File -------------------- */
-        stage('Transfer Compose File to Remote') {
+        /* ---------- 6. COPY FILE ---------- */
+        stage('Copy Compose File') {
             steps {
                 script {
                     sh """
-                        sshpass -p '${REMOTE_PASS}' \
-                        scp -o StrictHostKeyChecking=no ${COMPOSE_FILE} \
+                        sshpass -p '${REMOTE_PASS}' scp -o StrictHostKeyChecking=no ${COMPOSE_FILE} \
                         ${REMOTE_USER}@${REMOTE_IP}:/home/${REMOTE_USER}/${COMPOSE_FILE}
                     """
                 }
             }
         }
 
-        /* -------------------- 6. Deploy on Remote -------------------- */
-        stage('Deploy Services on Remote') {
+        /* ---------- 7. DEPLOY ---------- */
+        stage('Deploy Services') {
             steps {
                 script {
                     sh """
                         sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "
-                            sudo systemctl restart docker;
-                            docker compose -f ${COMPOSE_FILE} pull;
-                            docker compose -f ${COMPOSE_FILE} up -d
+                            docker compose -f /home/${REMOTE_USER}/${COMPOSE_FILE} pull;
+                            docker compose -f /home/${REMOTE_USER}/${COMPOSE_FILE} up -d
                         "
                     """
                 }
             }
         }
 
-        /* -------------------- 7. Verify Deployment -------------------- */
-        stage('Verify Services') {
+        /* ---------- 8. VERIFY ---------- */
+        stage('Verify Deployment') {
             steps {
                 script {
-                    def output = sh(
+                    def ps = sh(
                         script: """
-                            sshpass -p '${REMOTE_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "docker ps"
+                            sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "docker ps"
                         """,
                         returnStdout: true
-                    ).trim()
+                    )
 
-                    echo output
+                    echo ps
 
-                    if (!output.contains("postgres") || !output.contains("redis")) {
-                        error "Postgres किंवा Redis चालू नाहीत!"
+                    if (!ps.contains("redis") || !ps.contains("postgres")) {
+                        error "❌ Services are not running!"
                     }
                 }
             }
@@ -147,7 +148,11 @@ pipeline {
     }
 
     post {
-        success { echo "Pipeline SUCCESSFUL 🎉" }
-        failure { echo "Pipeline FAILED ❌" }
+        success {
+            echo "🎉 Pipeline Successful! Remote PostgreSQL + Redis deployed via Registry 192.168.1.10:5000."
+        }
+        failure {
+            echo "❌ Pipeline Failed — कृपया logs तपासा."
+        }
     }
 }
