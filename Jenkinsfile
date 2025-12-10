@@ -4,7 +4,7 @@ pipeline {
     parameters {
         string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote machine IP')
         string(name: 'REMOTE_USER', defaultValue: '', description: 'SSH Username')
-        password(name: 'REMOTE_PASS', defaultValue: '', description: 'SSH Password')
+        string(name: 'REMOTE_PASS', defaultValue: '', description: 'SSH Password')
     }
 
     environment {
