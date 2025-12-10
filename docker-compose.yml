@@ -13,23 +13,19 @@ services:
 
   postgres:
     container_name: infra-postgres
-    image: ${REGISTRY_IP}:5000/infra/postgres:latest
+    image: postgres:latest
     environment:
       POSTGRES_PASSWORD: example
     ports:
       - "5432:5432"
     restart: unless-stopped
-    depends_on:
-      - registry
 
   redis:
     container_name: infra-redis
-    image: ${REGISTRY_IP}:5000/infra/redis:latest
+    image: redis:latest
     ports:
       - "6379:6379"
     restart: unless-stopped
-    depends_on:
-      - registry
 
 volumes:
   registry_data:
