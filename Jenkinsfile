@@ -18,28 +18,21 @@ pipeline {
 
     stages {
 
-        /* -------------------------
-           1) CHECK CONNECTION
-        ------------------------- */
         stage("Check Connection") {
             steps {
                 sh """
-                    echo "🔗 Checking SSH connectivity to ${params.SSH_USER}@${params.TARGET_IP} ..."
+                    echo "Checking SSH connectivity ..."
                     sshpass -p "${params.SSH_PASS}" \\
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "echo Connected OK"
                 """
             }
         }
 
-        /* -------------------------
-           2) DETECT OS
-        ------------------------- */
         stage("Detect OS") {
             steps {
-                echo "🔍 Detecting OS..."
+                echo "Detecting OS..."
                 script {
 
-                    // --- Try Linux check first ---
                     def linuxCheck = sh(
                         returnStdout: true,
                         script: """
@@ -52,11 +45,10 @@ pipeline {
 
                     if (linuxCheck.toLowerCase().contains("linux")) {
                         env.OS_TYPE = "linux"
-                        echo "🖥️ OS Detected: Linux"
+                        echo "OS Detected: Linux"
                         return
                     }
 
-                    // --- Try Windows check ---
                     def winCheck = sh(
                         returnStdout: true,
                         script: """
@@ -70,28 +62,24 @@ pipeline {
 
                     if (winCheck.toLowerCase().contains("win32nt")) {
                         env.OS_TYPE = "windows"
-                        echo "🖥️ OS Detected: Windows"
+                        echo "OS Detected: Windows"
                         return
                     }
 
-                    error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
+                    error "Could not detect OS!"
                 }
             }
         }
 
-        /* -------------------------
-           3) INSTALL DOCKER (LINUX)
-        ------------------------- */
         stage("Install Docker (Linux)") {
             when { expression { env.OS_TYPE == "linux" } }
             steps {
                 sh """
-                    echo "🐧 Installing Docker & docker-compose on Linux if needed..."
+                    echo "Installing Docker if needed..."
                     sshpass -p "${params.SSH_PASS}" \\
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
                         set -e
 
-                        echo "Checking Docker..."
                         if ! command -v docker >/dev/null 2>&1; then
                             echo "Docker not found. Installing..."
                             if command -v apt-get >/dev/null 2>&1; then
@@ -101,71 +89,94 @@ pipeline {
                                 yum update -y
                                 yum install -y docker
                             else
-                                echo "❌ Neither apt-get nor yum found. Install Docker manually."
+                                echo "No apt-get or yum found."
                                 exit 1
                             fi
-                        else
-                            echo "✅ Docker already installed: \$(docker --version)"
                         fi
 
-                        echo "Ensuring Docker service is running..."
                         if command -v systemctl >/dev/null 2>&1; then
                             systemctl start docker || true
                             systemctl enable docker || true
                         fi
 
-                        echo "Checking docker-compose..."
                         if ! command -v docker-compose >/dev/null 2>&1 && [ ! -x /usr/local/bin/docker-compose ]; then
-                            echo "docker-compose not found. Installing binary in /usr/local/bin..."
+                            echo "Installing docker-compose..."
                             curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \\
                                 -o /usr/local/bin/docker-compose
                             chmod +x /usr/local/bin/docker-compose
-                        else
-                            echo "✅ docker-compose already present."
                         fi
-
-                        echo "Docker info:"
-                        docker info || echo "⚠️ docker info failed (but continuing)"
                     '
                 """
             }
         }
 
-        /* -------------------------
-           4) INSTALL DOCKER (WINDOWS)
-        ------------------------- */
         stage("Install Docker (Windows)") {
             when { expression { env.OS_TYPE == "windows" } }
             steps {
                 sh """
                     sshpass -p "${params.SSH_PASS}" \\
                     ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \\
-                    "powershell -Command \\"Write-Host 'Windows detected. Install Docker Desktop manually or via winget.'\\""
+                    "powershell -Command \\"Write-Host 'Windows detected. Install Docker manually.'\\""
                 """
             }
         }
 
-        /* -------------------------
-           5) UPLOAD COMPOSE FILE (OS-wise)
-        ------------------------- */
         stage("Upload docker-compose.yml") {
             steps {
                 script {
                     if (env.OS_TYPE == "linux") {
                         sh """
-                            echo "📤 Uploading docker-compose.yml to Linux path ${COMPOSE_FILE_LINUX} ..."
-                            sshpass -p "${params.SSH_PASS}" \\
-                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${COMPOSE_DIR_LINUX}"
-
-                            sshpass -p "${params.SSH_PASS}" \\
-                            scp -o StrictHostKeyChecking=no docker-compose.yml \\
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${COMPOSE_DIR_LINUX}"
+                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \\
                             ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_LINUX}
-
-                            echo "✅ File uploaded. Remote listing:"
-                            sshpass -p "${params.SSH_PASS}" \\
-                            ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "ls -l ${COMPOSE_DIR_LINUX}"
                         """
                     }
 
                     if (env.OS_TYPE == "windows") {
                         sh """
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \\
+                            "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
+
+                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \\
+                            ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_WIN}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage("Run docker-compose (Linux)") {
+            when { expression { env.OS_TYPE == "linux" } }
+            steps {
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \\
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                        export PATH=$PATH:/usr/local/bin
+                        cd ${COMPOSE_DIR_LINUX}
+
+                        if command -v docker-compose >/dev/null 2>&1; then
+                            docker-compose down || true
+                            docker-compose up -d
+                        elif [ -x /usr/local/bin/docker-compose ]; then
+                            /usr/local/bin/docker-compose down || true
+                            /usr/local/bin/docker-compose up -d
+                        elif docker compose version >/dev/null 2>&1; then
+                            docker compose down || true
+                            docker compose up -d
+                        else
+                            echo "No docker-compose found."
+                            exit 1
+                        fi
+
+                        docker ps -a
+                    '
+                """
+            }
+        }
+    }
+
+    post {
+        success { echo "Deployment Successful" }
+        failure { echo "Deployment Failed" }
+    }
+}
