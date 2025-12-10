@@ -22,14 +22,13 @@ pipeline {
     stages {
 
         /* ----------------------------------------------------------
-           1) Detect Remote OS (Linux / Windows)
+           1) DETECT REMOTE OS
         ---------------------------------------------------------- */
         stage("Detect Remote OS") {
             steps {
                 script {
                     echo "🔍 Detecting Remote OS..."
 
-                    // Try Linux
                     def linuxCheck = sh(returnStatus: true, script: """
                         sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "uname -s"
                     """)
@@ -38,7 +37,7 @@ pipeline {
                         env.OS_TYPE = "linux"
                         echo "✅ Remote OS Detected: LINUX"
                     } else {
-                        // Try Windows
+
                         def winCheck = sh(returnStatus: true, script: """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
                                 "powershell -NoProfile -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
@@ -56,7 +55,7 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-           2) Pull → Tag → Push images to PRIVATE registry
+           2) PULL → TAG → PUSH to PRIVATE REGISTRY
         ---------------------------------------------------------- */
         stage("Push Images to Registry") {
             steps {
@@ -75,7 +74,7 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-           3) Create docker-compose.yml
+           3) CREATE docker-compose.yml
         ---------------------------------------------------------- */
         stage("Create Compose File") {
             steps {
@@ -111,22 +110,20 @@ services:
 volumes:
   registry_data:
 """
-                    // NOTE: docker compose v2 pe 'version' field obsolete warning deta hai,
-                    // isliye upar se intentionally hata diya.
                     writeFile file: "docker-compose.yml", text: composeText
                 }
             }
         }
 
         /* ----------------------------------------------------------
-           4) Upload docker-compose.yml (Linux + Windows)
+           4) UPLOAD docker-compose.yml (Linux + Windows)
         ---------------------------------------------------------- */
         stage("Upload Compose File") {
             steps {
                 script {
                     if (env.OS_TYPE == "linux") {
 
-                        echo "📤 Uploading compose file to LINUX..."
+                        echo "📤 Uploading compose to LINUX..."
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
                                 "mkdir -p ${LINUX_COMPOSE_DIR}"
@@ -137,7 +134,7 @@ volumes:
 
                     } else {
 
-                        echo "📤 Uploading compose file to WINDOWS & preparing Docker config..."
+                        echo "📤 Uploading compose to WINDOWS & preparing Docker config..."
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
                                 "powershell -NoProfile -Command \\
@@ -155,11 +152,12 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           5) Deploy Services (Linux + Windows)
+           5) DEPLOY (Linux + Windows)
         ---------------------------------------------------------- */
         stage("Deploy Services") {
             steps {
                 script {
+
                     if (env.OS_TYPE == "linux") {
 
                         echo "🚀 Deploying on LINUX..."
@@ -175,16 +173,15 @@ volumes:
                     } else {
 
                         echo "🚀 Deploying on WINDOWS..."
-                        // IMPORTANT: set DOCKER_CONFIG to avoid Windows credential helper error
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "powershell -NoProfile -Command \\
-                                    \\"\\$env:DOCKER_CONFIG = 'C:/docker-config'; \\
-                                      cd '${WIN_COMPOSE_DIR}'; \\
-                                      docker compose down; \\
-                                      docker compose pull; \\
-                                      docker compose up -d\\"
-                                "
+                            "powershell -NoProfile -Command \"
+                                \$Env:DOCKER_CONFIG = 'C:/docker-config';
+                                Set-Location 'C:/infra';
+                                docker compose down;
+                                docker compose pull;
+                                docker compose up -d;
+                            \""
                         """
                     }
                 }
@@ -192,7 +189,7 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           6) Verify deployment
+           6) VERIFY
         ---------------------------------------------------------- */
         stage("Verify Deployment") {
             steps {
