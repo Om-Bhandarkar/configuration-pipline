@@ -21,7 +21,9 @@ pipeline {
 
     stages {
 
-        /* Detect OS */
+        /* -------------------------------
+           Detect Linux or Windows Remote
+        -------------------------------- */
         stage("Detect Remote OS") {
             steps {
                 script {
@@ -31,24 +33,31 @@ pipeline {
 
                     if (linuxCheck == 0) {
                         env.OS_TYPE = "linux"
+                        echo "✅ Remote OS: Linux"
                     } else {
                         def winCheck = sh(returnStatus: true, script: """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
                             "powershell -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
                         """)
 
-                        if (winCheck == 0) env.OS_TYPE = "windows"
-                        else error "Cannot detect OS"
+                        if (winCheck == 0) {
+                            env.OS_TYPE = "windows"
+                            echo "🟦 Remote OS: Windows"
+                        } else {
+                            error "❌ OS Detection Failed!"
+                        }
                     }
                 }
             }
         }
 
-        /* Pull + Tag + Push */
+        /* -------------------------------
+           PULL → TAG → PUSH (PRIVATE REGISTRY)
+        -------------------------------- */
         stage("Push Images To Registry") {
             steps {
                 sh """
-                    # Pull from Docker Hub
+                    # Pull official images
                     docker pull postgres:latest
                     docker pull redis:latest
 
@@ -56,26 +65,30 @@ pipeline {
                     docker tag postgres:latest ${REGISTRY_URL}/infra/postgres:latest
                     docker tag redis:latest ${REGISTRY_URL}/infra/redis:latest
 
-                    # Allow insecure registry on remote
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
-                        mkdir -p /etc/docker
-                        echo "{\\"insecure-registries\\":[\\"${REGISTRY_URL}\\"]}" > /etc/docker/daemon.json
-                        systemctl restart docker || true
-                    '
+                    # IMPORTANT:
+                    # Jenkins host must have insecure registry configured manually:
+                    #
+                    # /etc/docker/daemon.json:
+                    # {
+                    #   "insecure-registries": ["${REGISTRY_URL}"]
+                    # }
+                    #
+                    # Then: sudo systemctl restart docker
 
-                    # Push to private registry
+                    # Push images into private registry
                     docker push ${REGISTRY_URL}/infra/postgres:latest
                     docker push ${REGISTRY_URL}/infra/redis:latest
                 """
             }
         }
 
-        /* Upload compose file */
-        stage("Upload Compose File") {
+        /* -------------------------------
+           Create Compose File Locally
+        -------------------------------- */
+        stage("Create Compose File") {
             steps {
                 script {
-
-                    def compose = """
+                    def text = """
 version: "3.8"
 
 services:
@@ -108,9 +121,17 @@ services:
 volumes:
   registry_data:
 """
+                    writeFile file: "docker-compose.yml", text: text
+                }
+            }
+        }
 
-                    writeFile file: "docker-compose.yml", text: compose
-
+        /* -------------------------------
+           Upload Compose File
+        -------------------------------- */
+        stage("Upload Compose File") {
+            steps {
+                script {
                     if (env.OS_TYPE == "linux") {
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${LINUX_COMPOSE_DIR}"
@@ -119,7 +140,8 @@ volumes:
                     } else {
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} ^
-                                "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}'\\""
+                              "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}'\\""
+
                             sshpass -p "${SSH_PASS}" scp docker-compose.yml ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE_FILE}
                         """
                     }
@@ -127,7 +149,9 @@ volumes:
             }
         }
 
-        /* Deploy */
+        /* -------------------------------
+           Deploy Compose (Linux/Windows)
+        -------------------------------- */
         stage("Deploy Services") {
             steps {
                 script {
@@ -143,20 +167,28 @@ volumes:
                     } else {
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} ^
-                                "powershell -Command \\"cd '${WIN_COMPOSE_DIR}'; docker compose down; docker compose pull; docker compose up -d\\""
+                              "powershell -Command \\"cd '${WIN_COMPOSE_DIR}'; docker compose down; docker compose pull; docker compose up -d\\""
                         """
                     }
                 }
             }
         }
 
-        /* Verify */
+        /* -------------------------------
+           Verify Deployment
+        -------------------------------- */
         stage("Verify") {
             steps {
                 sh """
                     sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "docker ps"
                 """
             }
+        }
+    }
+
+    post {
+        always {
+            sh 'rm -f docker-compose.yml || true'
         }
     }
 }
