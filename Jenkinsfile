@@ -8,47 +8,16 @@ pipeline {
     }
 
     environment {
-        REGISTRY_URL = "${TARGET_IP}:5000"
         COMPOSE_DIR = "/infra"
         COMPOSE_FILE = "/infra/docker-compose.yml"
     }
 
     stages {
 
-        stage("Build Images") {
-            steps {
-                sh """
-                    docker build -t infra/postgres:latest postgres/
-                    docker build -t infra/redis:latest redis/
-                """
-            }
-        }
-
-        stage("Push Images to Registry") {
-            steps {
-                sh """
-                    docker tag infra/postgres:latest ${REGISTRY_URL}/infra/postgres:latest
-                    docker tag infra/redis:latest ${REGISTRY_URL}/infra/redis:latest
-                    
-                    # Allow insecure registry on remote
-                    sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
-                        mkdir -p /etc/docker
-                        echo "{\\"insecure-registries\\":[\\"${TARGET_IP}:5000\\"]}" > /etc/docker/daemon.json
-                        systemctl restart docker
-                    '
-
-                    docker push ${REGISTRY_URL}/infra/postgres:latest
-                    docker push ${REGISTRY_URL}/infra/redis:latest
-                """
-            }
-        }
-
         stage("Upload Compose File") {
             steps {
                 script {
-
-                    // Compose template
-                    def composeTemplate = """
+                    def composeContent = """
 version: "3.8"
 
 services:
@@ -64,7 +33,7 @@ services:
 
   postgres:
     container_name: infra-postgres
-    image: __REGISTRY_IP__:5000/infra/postgres:latest
+    image: postgres:latest
     environment:
       POSTGRES_PASSWORD: example
     ports:
@@ -75,7 +44,7 @@ services:
 
   redis:
     container_name: infra-redis
-    image: __REGISTRY_IP__:5000/infra/redis:latest
+    image: redis:latest
     ports:
       - "6379:6379"
     restart: unless-stopped
@@ -86,22 +55,17 @@ volumes:
   registry_data:
 """
 
-                    // Replace placeholder with real IP
-                    def finalCompose = composeTemplate.replace("__REGISTRY_IP__", TARGET_IP)
+                    writeFile file: 'docker-compose.yml', text: composeContent
 
-                    // Write file locally
-                    writeFile file: 'docker-compose.yml', text: finalCompose
-
-                    // Upload to remote
                     sh """
-                        sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} 'mkdir -p ${COMPOSE_DIR}'
+                        sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${COMPOSE_DIR}"
                         sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${COMPOSE_FILE}
                     """
                 }
             }
         }
 
-        stage("Deploy") {
+        stage("Deploy Services") {
             steps {
                 sh """
                     sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
@@ -120,6 +84,12 @@ volumes:
                     sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "docker ps"
                 """
             }
+        }
+    }
+
+    post {
+        always {
+            sh "rm -f docker-compose.yml"
         }
     }
 }
