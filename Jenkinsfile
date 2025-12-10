@@ -9,7 +9,7 @@ pipeline {
 
     environment {
         REGISTRY = "192.168.1.10:5000"   // <-- इथे तुझ्या Jenkins मशीनचा IP टाक
-        COMPOSE_FILE = "docker-compose.yml"
+        COMPOSE_FILE = "./docker-compose.yml"
     }
 
     stages {
