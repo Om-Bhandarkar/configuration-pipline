@@ -10,7 +10,7 @@ pipeline {
     environment {
         OS_TYPE = ""
         REGISTRY_URL = "${TARGET_IP}:5000"
-        
+
         LINUX_DIR  = "/infra"
         LINUX_COMPOSE = "/infra/docker-compose.yml"
 
@@ -21,7 +21,7 @@ pipeline {
     stages {
 
         /* -------------------------------------------------------------
-           DETECT OS
+           DETECT REMOTE OS
         ------------------------------------------------------------- */
         stage("Detect Remote OS") {
             steps {
@@ -41,14 +41,14 @@ pipeline {
                         def winCheck = sh(returnStatus: true, script: """
                             sshpass -p '${SSH_PASS}' \
                             ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                            powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).Caption"
+                              powershell -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).Caption"
                         """)
 
                         if (winCheck == 0) {
                             env.OS_TYPE = "windows"
                             echo "🟦 OS Detected: Windows"
                         } else {
-                            error "❌ Could not detect remote OS"
+                            error "❌ Unable to detect remote OS"
                         }
                     }
                 }
@@ -116,40 +116,26 @@ volumes:
         }
 
         /* -------------------------------------------------------------
-           UPLOAD COMPOSE FILE (LINUX & WINDOWS)
+           UPLOAD COMPOSE FILE (LINUX + WINDOWS)
         ------------------------------------------------------------- */
         stage("Upload Compose File") {
             steps {
                 script {
                     if (env.OS_TYPE == "linux") {
 
-                        echo "📤 Uploading compose to Linux..."
-
                         sh """
-                            sshpass -p '${SSH_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "mkdir -p ${LINUX_DIR}"
-
-                            sshpass -p '${SSH_PASS}' \
-                            scp -o StrictHostKeyChecking=no docker-compose.yml \
-                                ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE}
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${LINUX_DIR}"
+                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE}
                         """
 
                     } else {
 
-                        echo "📤 Uploading to Windows..."
-
                         sh """
-                            sshpass -p '${SSH_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                              powershell -NoProfile -Command "
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} powershell -NoProfile -Command "
                                 New-Item -ItemType Directory -Force -Path 'C:/infra' | Out-Null;
                                 New-Item -ItemType Directory -Force -Path 'C:/docker-config' | Out-Null;
-                              "
-
-                            sshpass -p '${SSH_PASS}' \
-                            scp -o StrictHostKeyChecking=no docker-compose.yml \
-                                ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE}
+                            "
+                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE}
                         """
                     }
                 }
@@ -157,19 +143,17 @@ volumes:
         }
 
         /* -------------------------------------------------------------
-           DEPLOY SERVICES (LINUX & WINDOWS FIXED)
+           DEPLOY SERVICES (LINUX + WINDOWS)
         ------------------------------------------------------------- */
         stage("Deploy Services") {
             steps {
                 script {
 
+                    /* ---------------------- LINUX ---------------------- */
                     if (env.OS_TYPE == "linux") {
 
-                        echo "🚀 Deploying on Linux..."
-
                         sh """
-                            sshpass -p '${SSH_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} '
                                 cd ${LINUX_DIR}
                                 docker compose down || true
                                 docker compose pull
@@ -177,23 +161,24 @@ volumes:
                             '
                         """
 
+                    /* ---------------------- WINDOWS ---------------------- */
                     } else {
 
-                        echo "🟦 Preparing Windows deploy.ps1..."
+                        echo "📄 Creating deploy.ps1..."
 
                         writeFile file: "deploy.ps1", text: """
 Write-Host "🔧 Setting Docker Config..."
 
 \$Env:DOCKER_CONFIG = "C:/docker-config"
 
-@"
+@'
 {
   "auths": {
-    "${REGISTRY_URL}": { }
+    "${REGISTRY_URL}": {}
   },
   "credsStore": ""
 }
-"@ | Set-Content -Path "C:/docker-config/config.json"
+'@ | Set-Content -Path "C:/docker-config/config.json"
 
 Write-Host "✔ DOCKER_CONFIG loaded"
 
@@ -201,7 +186,7 @@ Stop-Service com.docker.service
 Start-Service com.docker.service
 Start-Sleep -Seconds 5
 
-Write-Host "🚀 Deploying..."
+Write-Host "🚀 Deploying Docker Compose..."
 
 Set-Location "C:/infra"
 
@@ -213,15 +198,13 @@ Write-Host "✔ Deployment Completed"
 """
 
                         sh """
-                            sshpass -p '${SSH_PASS}' \
-                            scp -o StrictHostKeyChecking=no deploy.ps1 \
+                            sshpass -p '${SSH_PASS}' scp -o StrictHostKeyChecking=no deploy.ps1 \
                                 ${SSH_USER}@${TARGET_IP}:'C:/infra/deploy.ps1'
                         """
 
                         sh """
-                            sshpass -p '${SSH_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                              powershell -NoProfile -ExecutionPolicy Bypass -File 'C:/infra/deploy.ps1'
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                                powershell -NoProfile -ExecutionPolicy Bypass -File 'C:/infra/deploy.ps1'
                         """
                     }
                 }
@@ -235,18 +218,13 @@ Write-Host "✔ Deployment Completed"
             steps {
                 script {
                     if (env.OS_TYPE == "windows") {
-
                         sh """
-                            sshpass -p '${SSH_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
                               powershell -NoProfile -Command "docker ps --format \\"table {{.Names}},{{.Image}},{{.Status}}\\""
                         """
-
                     } else {
-
                         sh """
-                            sshpass -p '${SSH_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                            sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
                               "docker ps --format 'table {{.Names}}\\t{{.Image}}\\t{{.Status}}'"
                         """
                     }
