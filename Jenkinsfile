@@ -1,108 +1,173 @@
 pipeline {
     agent any
 
+    parameters {
+        string(name: 'TARGET_IP', description: 'Target Server IP')
+        string(name: 'SSH_USER', defaultValue: 'root', description: 'SSH Username')
+        password(name: 'SSH_PASS', description: 'SSH Password')
+    }
+
     environment {
-        REMOTE_IP = credentials('192.168.1.8')
-        SSH_USER  = credentials('jtsm')
-        SSH_PASS  = credentials('espl@2017')
+        OS_TYPE = ""
+        COMPOSE_DIR_LINUX  = "/infra"
+        COMPOSE_FILE_LINUX = "/infra/docker-compose.yml"
+
+        COMPOSE_DIR_WIN    = "C:/infra"
+        COMPOSE_FILE_WIN   = "C:/infra/docker-compose.yml"
     }
 
     stages {
 
-        stage('Detect OS on Remote Machine') {
+        /* -------------------------
+           1) CHECK CONNECTION
+        ------------------------- */
+        stage("Check Connection") {
             steps {
-                script {
-                    sh """
-                    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no $SSH_USER@$REMOTE_IP '
-                        echo "=== OS Information ==="
-                        uname -a
-                    '
-                    """
-                }
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "echo Connected OK"
+                """
             }
         }
 
-        stage('Install Docker & Docker Compose if Missing') {
+        /* -------------------------
+           2) DETECT OS
+        ------------------------- */
+           stage("Detect OS") {
+                steps {
+                    echo "🔍 Detecting OS..."
+                    script {
+            
+                        // --- Try Linux check first ---
+                        def linuxCheck = sh(
+                            returnStdout: true,
+                            script: """
+                                sshpass -p "${params.SSH_PASS}" \
+                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
+                            """
+                        ).trim()
+            
+                        echo "Linux check output: ${linuxCheck}"
+            
+                        if (linuxCheck.toLowerCase().contains("linux")) {
+                            env.OS_TYPE = "linux"
+                            echo "🖥️ OS Detected: Linux"
+                            return
+                        }
+            
+                        // --- Try Windows check ---
+                        def winCheck = sh(
+                            returnStdout: true,
+                            script: """
+                                sshpass -p "${params.SSH_PASS}" \
+                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                                "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
+                            """
+                        ).trim()
+            
+                        echo "Windows check output: ${winCheck}"
+            
+                        if (winCheck.toLowerCase().contains("win32nt")) {
+                            env.OS_TYPE = "windows"
+                            echo "🖥️ OS Detected: Windows"
+                            return
+                        }
+            
+                        error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
+                    }
+                }
+            }
+
+
+
+        /* -------------------------
+           3) INSTALL DOCKER (LINUX)
+        ------------------------- */
+        stage("Install Docker (Linux)") {
+            when { expression { env.OS_TYPE == "linux" } }
             steps {
-                script {
-                    sh """
-                    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no $SSH_USER@$REMOTE_IP '
-                        
-                        # Docker check
-                        if ! command -v docker >/dev/null 2>&1; then
-                            echo "Docker not found. Installing..."
-                            curl -fsSL https://get.docker.com | bash
-                        else
-                            echo "Docker already installed."
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                        if ! command -v docker >/dev/null; then
+                            apt-get update -y || yum update -y
+                            apt-get install -y docker.io || yum install -y docker
+                            systemctl start docker || true
+                            systemctl enable docker || true
                         fi
 
-                        # Docker Compose check
-                        if ! command -v docker-compose >/dev/null 2>&1; then
-                            echo "Docker Compose not found. Installing..."
-
-                            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" \
+                        if ! command -v docker-compose >/dev/null; then
+                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
                                 -o /usr/local/bin/docker-compose
-
-                            sudo chmod +x /usr/local/bin/docker-compose
-                        else
-                            echo "Docker Compose already installed."
+                            chmod +x /usr/local/bin/docker-compose
                         fi
-
                     '
-                    """
-                }
+                """
             }
         }
 
-        stage('Copy docker-compose.yml to Remote') {
+        /* -------------------------
+           4) INSTALL DOCKER (WINDOWS)
+        ------------------------- */
+        stage("Install Docker (Windows)") {
+            when { expression { env.OS_TYPE == "windows" } }
+            steps {
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
+                    "powershell -Command \\"Write-Host 'Windows detected. Install Docker Desktop manually or via winget.'\\""
+                """
+            }
+        }
+
+        /* -------------------------
+           5) UPLOAD COMPOSE FILE (OS-wise)
+        ------------------------- */
+        stage("Upload docker-compose.yml") {
             steps {
                 script {
-                    sh """
-                    echo "Copying docker-compose.yml to remote server..."
-                    sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no docker-compose.yml \
-                    $SSH_USER@$REMOTE_IP:~/docker-compose.yml
-                    """
+
+                    if (env.OS_TYPE == "linux") {
+                        sh """
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${COMPOSE_DIR_LINUX}"
+                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_LINUX}
+                        """
+                    }
+
+                    if (env.OS_TYPE == "windows") {
+                        sh """
+                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
+                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_WIN}
+                        """
+                    }
                 }
             }
         }
 
-        stage('Start Redis & Postgres if Not Running') {
+        /* -------------------------
+           6) RUN COMPOSE (LINUX ONLY)
+        ------------------------- */
+        stage("Run docker-compose (Linux)") {
+            when { expression { env.OS_TYPE == "linux" } }
             steps {
-                script {
-                    sh """
-                    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no $SSH_USER@$REMOTE_IP '
-
-                        running=\$(docker ps --format "{{.Names}}")
-
-                        # Redis check
-                        if ! echo "\$running" | grep -q "redis"; then
-                            echo "Redis not running. Starting..."
-                            docker-compose -f ~/docker-compose.yml up -d redis
-                        else
-                            echo "Redis already running."
-                        fi
-
-                        # Postgres check
-                        if ! echo "\$running" | grep -q "postgres"; then
-                            echo "Postgres not running. Starting..."
-                            docker-compose -f ~/docker-compose.yml up -d postgres
-                        else
-                            echo "Postgres already running."
-                        fi
-
+                sh """
+                    sshpass -p "${params.SSH_PASS}" \
+                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                        cd ${COMPOSE_DIR_LINUX}
+                        docker-compose down || true
+                        docker-compose up -d
                     '
-                    """
-                }
+                """
             }
         }
+
+        /* -------------------------
+           WINDOWS IS NOT SUPPORTED FOR docker-compose directly here
+        ------------------------- */
     }
 
     post {
-        success {
-            echo "🎉 SUCCESS: Redis & Postgres containers are running on remote machine!"
-        }
-        failure {
-            echo "❌ Pipeline failed. Check logs."
-        }
+        success { echo "🎉 Deployment Successful" }
+        failure { echo "❌ Deployment Failed" }
     }
 }
