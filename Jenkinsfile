@@ -8,67 +8,63 @@ pipeline {
     }
 
     environment {
+        REGISTRY = "192.168.1.10:5000"   // <-- इथे तुझ्या Jenkins मशीनचा IP टाक
         COMPOSE_FILE = "docker-compose.yml"
-        REGISTRY = "your-registry.com"
     }
 
     stages {
 
-        /* ----------------------- 1. TEST SSH ----------------------- */
+        /* -------------------- 1. Test SSH -------------------- */
         stage('Validate SSH Connection') {
             steps {
                 script {
                     sh """
-                        sshpass -p '${params.REMOTE_PASS}' \
-                        ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "echo connected"
+                        sshpass -p '${REMOTE_PASS}' \
+                        ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "echo connected"
                     """
                 }
             }
         }
 
-        /* ----------------------- 2. DETECT OS ---------------------- */
+        /* -------------------- 2. Detect OS -------------------- */
         stage('Detect OS') {
             steps {
                 script {
-                    def os = sh(
+                    def result = sh(
                         script: """
-                            sshpass -p '${params.REMOTE_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "uname || ver"
+                            sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "uname || ver"
                         """,
                         returnStdout: true
                     ).trim()
 
-                    if (os.toLowerCase().contains("linux")) {
+                    if (result.toLowerCase().contains("linux")) {
                         env.OS_TYPE = "LINUX"
                     } else {
                         env.OS_TYPE = "WINDOWS"
                     }
-
-                    echo "OS Detected = ${env.OS_TYPE}"
+                    echo "Detected Remote OS = ${env.OS_TYPE}"
                 }
             }
         }
 
-        /* ----------------------- 3. OS SETUP ----------------------- */
-        stage('Setup Remote OS') {
+        /* -------------------- 3. Setup OS -------------------- */
+        stage('Setup Remote System') {
             steps {
                 script {
-                    if (env.OS_TYPE == "LINUX") {
 
+                    if (env.OS_TYPE == "LINUX") {
                         sh """
-                            sshpass -p '${params.REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} '
-                                sudo apt-get update -y &&
-                                sudo apt-get install -y openssh-server curl ufw &&
+                            sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} '
+                                sudo apt update -y &&
+                                sudo apt install -y curl ufw &&
                                 sudo ufw allow 22 &&
                                 curl -fsSL https://get.docker.com | sudo sh &&
-                                sudo usermod -aG docker ${params.REMOTE_USER}
+                                sudo usermod -aG docker ${REMOTE_USER}
                             '
                         """
-
                     } else {
-
                         sh """
-                            sshpass -p '${params.REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                            sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "
                                 powershell Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0;
                                 powershell Start-Service sshd;
                                 powershell New-NetFirewallRule -Name sshd -Protocol TCP -LocalPort 22 -Action Allow;
@@ -76,57 +72,66 @@ pipeline {
                                 powershell Start-Service com.docker.service
                             "
                         """
-
                     }
                 }
             }
         }
 
-        /* ---------------------- 4. BUILD + PUSH ---------------------- */
+        /* -------------------- 4. Build & Push Images -------------------- */
         stage('Build & Push Images') {
             steps {
-                sh """
-                    docker-compose -f ${COMPOSE_FILE} build
-                    echo '${params.REMOTE_PASS}' | docker login ${REGISTRY} --username ${params.REMOTE_USER} --password-stdin
-                    docker-compose -f ${COMPOSE_FILE} push
-                """
+                script {
+                    sh """
+                        echo "Building images..."
+                        docker-compose -f ${COMPOSE_FILE} build
+
+                        echo "Tagging & Pushing to Registry..."
+                        docker-compose -f ${COMPOSE_FILE} images --quiet | while read IMG; do
+                            NAME=\$(echo \$IMG | awk -F '/' '{print \$NF}')
+                            docker tag \$IMG ${REGISTRY}/\$NAME
+                            docker push ${REGISTRY}/\$NAME
+                        done
+                    """
+                }
             }
         }
 
-        /* ---------------------- 5. COPY COMPOSE FILE ----------------- */
-        stage('Copy Compose File') {
+        /* -------------------- 5. Copy Compose File -------------------- */
+        stage('Transfer Compose File to Remote') {
             steps {
-                sh """
-                    sshpass -p '${params.REMOTE_PASS}' \
-                    scp -o StrictHostKeyChecking=no ${COMPOSE_FILE} \
-                    ${params.REMOTE_USER}@${params.REMOTE_IP}:/home/${params.REMOTE_USER}/${COMPOSE_FILE}
-                """
+                script {
+                    sh """
+                        sshpass -p '${REMOTE_PASS}' \
+                        scp -o StrictHostKeyChecking=no ${COMPOSE_FILE} \
+                        ${REMOTE_USER}@${REMOTE_IP}:/home/${REMOTE_USER}/${COMPOSE_FILE}
+                    """
+                }
             }
         }
 
-        /* ---------------------- 6. DEPLOY REMOTE --------------------- */
-        stage('Deploy Containers') {
+        /* -------------------- 6. Deploy on Remote -------------------- */
+        stage('Deploy Services on Remote') {
             steps {
-                sh """
-                    sshpass -p '${params.REMOTE_PASS}' \
-                    ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "
-                        echo '${params.REMOTE_PASS}' | docker login ${REGISTRY} --username ${params.REMOTE_USER} --password-stdin;
-                        docker compose -f ${COMPOSE_FILE} pull;
-                        docker compose -f ${COMPOSE_FILE} up -d
-                    "
-                """
+                script {
+                    sh """
+                        sshpass -p '${REMOTE_PASS}' ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "
+                            sudo systemctl restart docker;
+                            docker compose -f ${COMPOSE_FILE} pull;
+                            docker compose -f ${COMPOSE_FILE} up -d
+                        "
+                    """
+                }
             }
         }
 
-        /* ---------------------- 7. VERIFY ---------------------------- */
+        /* -------------------- 7. Verify Deployment -------------------- */
         stage('Verify Services') {
             steps {
                 script {
                     def output = sh(
                         script: """
-                            sshpass -p '${params.REMOTE_PASS}' \
-                            ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} \
-                            "docker ps"
+                            sshpass -p '${REMOTE_PASS}' \
+                            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_IP} "docker ps"
                         """,
                         returnStdout: true
                     ).trim()
@@ -134,7 +139,7 @@ pipeline {
                     echo output
 
                     if (!output.contains("postgres") || !output.contains("redis")) {
-                        error "PostgreSQL OR Redis not running!"
+                        error "Postgres किंवा Redis चालू नाहीत!"
                     }
                 }
             }
