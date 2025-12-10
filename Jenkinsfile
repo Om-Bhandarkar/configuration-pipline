@@ -8,13 +8,13 @@ pipeline {
     }
 
     environment {
-        REGISTRY_URL = "${TARGET_IP}:5000"
+        REGISTRY_URL       = "${TARGET_IP}:5000"
 
-        LINUX_COMPOSE_DIR = "/infra"
+        LINUX_COMPOSE_DIR  = "/infra"
         LINUX_COMPOSE_FILE = "/infra/docker-compose.yml"
 
-        WIN_COMPOSE_DIR = "C:/infra"
-        WIN_COMPOSE_FILE = "C:/infra/docker-compose.yml"
+        WIN_COMPOSE_DIR    = "C:/infra"
+        WIN_COMPOSE_FILE   = "C:/infra/docker-compose.yml"
 
         OS_TYPE = ""
     }
@@ -22,7 +22,7 @@ pipeline {
     stages {
 
         /* ----------------------------------------------------------
-           DETECT REMOTE OS (LINUX OR WINDOWS)
+           1) Detect Remote OS (Linux / Windows)
         ---------------------------------------------------------- */
         stage("Detect Remote OS") {
             steps {
@@ -41,7 +41,7 @@ pipeline {
                         // Try Windows
                         def winCheck = sh(returnStatus: true, script: """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                            "powershell -NoProfile -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
+                                "powershell -NoProfile -Command \\"(Get-CimInstance Win32_OperatingSystem).Caption\\""
                         """)
 
                         if (winCheck == 0) {
@@ -56,7 +56,7 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-           PULL → TAG → PUSH IMAGES TO PRIVATE REGISTRY
+           2) Pull → Tag → Push images to PRIVATE registry
         ---------------------------------------------------------- */
         stage("Push Images to Registry") {
             steps {
@@ -65,7 +65,7 @@ pipeline {
                     docker pull redis:latest
 
                     docker tag postgres:latest ${REGISTRY_URL}/infra/postgres:latest
-                    docker tag redis:latest ${REGISTRY_URL}/infra/redis:latest
+                    docker tag redis:latest    ${REGISTRY_URL}/infra/redis:latest
 
                     echo "📤 Pushing images to private registry..."
                     docker push ${REGISTRY_URL}/infra/postgres:latest
@@ -75,14 +75,12 @@ pipeline {
         }
 
         /* ----------------------------------------------------------
-           CREATE docker-compose.yml
+           3) Create docker-compose.yml
         ---------------------------------------------------------- */
         stage("Create Compose File") {
             steps {
                 script {
                     def composeText = """
-version: "3.8"
-
 services:
 
   registry:
@@ -113,33 +111,40 @@ services:
 volumes:
   registry_data:
 """
+                    // NOTE: docker compose v2 pe 'version' field obsolete warning deta hai,
+                    // isliye upar se intentionally hata diya.
                     writeFile file: "docker-compose.yml", text: composeText
                 }
             }
         }
 
         /* ----------------------------------------------------------
-           UPLOAD docker-compose.yml (WINDOWS + LINUX)
+           4) Upload docker-compose.yml (Linux + Windows)
         ---------------------------------------------------------- */
         stage("Upload Compose File") {
             steps {
                 script {
-
                     if (env.OS_TYPE == "linux") {
 
                         echo "📤 Uploading compose file to LINUX..."
                         sh """
-                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} "mkdir -p ${LINUX_COMPOSE_DIR}"
+                            sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                                "mkdir -p ${LINUX_COMPOSE_DIR}"
+
                             sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \
                                 ${SSH_USER}@${TARGET_IP}:${LINUX_COMPOSE_FILE}
                         """
 
                     } else {
 
-                        echo "📤 Uploading compose file to WINDOWS..."
+                        echo "📤 Uploading compose file to WINDOWS & preparing Docker config..."
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "powershell -NoProfile -Command \\"New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}'\\""
+                                "powershell -NoProfile -Command \\
+                                    \\"New-Item -ItemType Directory -Force -Path '${WIN_COMPOSE_DIR}' | Out-Null; \\
+                                      New-Item -ItemType Directory -Force -Path 'C:/docker-config' | Out-Null; \\
+                                      Set-Content -Path 'C:/docker-config/config.json' -Value '{}'\\"
+                                "
 
                             sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml \
                                 ${SSH_USER}@${TARGET_IP}:${WIN_COMPOSE_FILE}
@@ -150,12 +155,11 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           DEPLOY SERVICES (WINDOWS + LINUX)
+           5) Deploy Services (Linux + Windows)
         ---------------------------------------------------------- */
         stage("Deploy Services") {
             steps {
                 script {
-
                     if (env.OS_TYPE == "linux") {
 
                         echo "🚀 Deploying on LINUX..."
@@ -171,9 +175,16 @@ volumes:
                     } else {
 
                         echo "🚀 Deploying on WINDOWS..."
+                        // IMPORTANT: set DOCKER_CONFIG to avoid Windows credential helper error
                         sh """
                             sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                                "powershell -NoProfile -Command \\"cd '${WIN_COMPOSE_DIR}'; docker compose down; docker compose pull; docker compose up -d\\""
+                                "powershell -NoProfile -Command \\
+                                    \\"\\$env:DOCKER_CONFIG = 'C:/docker-config'; \\
+                                      cd '${WIN_COMPOSE_DIR}'; \\
+                                      docker compose down; \\
+                                      docker compose pull; \\
+                                      docker compose up -d\\"
+                                "
                         """
                     }
                 }
@@ -181,7 +192,7 @@ volumes:
         }
 
         /* ----------------------------------------------------------
-           VERIFY RUNNING SERVICES
+           6) Verify deployment
         ---------------------------------------------------------- */
         stage("Verify Deployment") {
             steps {
