@@ -16,6 +16,8 @@ pipeline {
 
     stages {
 
+        /* ============================= INPUT VALIDATION ============================= */
+
         stage('Input Validation') {
             steps {
                 script {
@@ -27,148 +29,137 @@ pipeline {
             }
         }
 
+
+        /* ============================= DETECT OS ============================= */
+
         stage('Detect OS') {
             steps {
                 script {
-                    echo "🔍 Remote machine ची OS detect करत आहे..."
+                    echo "🔍 Remote machine OS detect करत आहे..."
 
                     detectedOS = "unknown"
 
+                    // Linux check
                     try {
                         def osInfo = sh(
-                            script: """
-                                sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${params.REMOTE_USER}@${params.REMOTE_IP} 'uname -s'
-                            """,
+                            script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${params.REMOTE_USER}@${params.REMOTE_IP} 'uname -s'""",
                             returnStdout: true
                         ).trim()
 
                         if (osInfo.contains("Linux")) {
                             detectedOS = "linux"
-                            echo "✅ Linux OS detected!"
+                            echo "🐧 Linux detected!"
                         }
-                    } catch(e) {
-                        echo "SSH Linux check failed → Checking Windows..."
-                    }
+                    } catch(e) {}
 
+                    // Windows check
                     if (detectedOS == "unknown") {
                         try {
                             def winInfo = sh(
-                                script: """
-                                    sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\""
-                                """,
+                                script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\"" """,
                                 returnStdout: true
                             ).trim()
 
                             if (winInfo) {
                                 detectedOS = "windows"
-                                echo "✅ Windows OS detected!"
+                                echo "🪟 Windows detected!"
                             }
                         } catch(e) {
-                            detectedOS = "windows"  // fallback
+                            detectedOS = "windows"
                         }
                     }
 
-                    echo "🎯 Final Detected OS: ${detectedOS}"
+                    echo "🎯 Final detected OS: ${detectedOS}"
                 }
             }
         }
 
-        /* =============================== LINUX SETUP =============================== */
 
-        stage('Linux Setup') {
-            when {
-                expression { detectedOS == 'linux' }
-            }
-            stages {
+        /* ============================= LINUX SETUP ============================= */
 
-                stage('Check Docker on Linux') {
-                    steps {
-                        script {
-                            echo "🐧 Linux: Checking Docker..."
+        stage('Transfer Compose (Linux)') {
+            when { expression { detectedOS == 'linux' } }
+            steps {
+                script {
+                    echo "📤 Linux: docker-compose.yml transfer करत आहे..."
 
-                            def dockerInstalled = sh(
-                                script: """
-                                    sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
-                                        if command -v docker >/dev/null; then echo installed; else echo not; fi
-                                    '
-                                """,
-                                returnStdout: true
-                            ).trim()
-
-                            if (dockerInstalled == "installed") {
-                                echo "✅ Docker already installed!"
-                            } else {
-                                echo "⚠️ Installing Docker..."
-                                sh """
-                                    sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
-                                        sudo apt-get update
-                                        sudo apt-get install -y docker.io
-                                        sudo systemctl start docker
-                                        sudo systemctl enable docker
-                                    '
-                                """
-                            }
-                        }
-                    }
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
+                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:~/docker-deployment/docker-compose.yml
+                    """
                 }
-
-                stage('Setup Docker Registry on Linux') {
-                    steps {
-                        script {
-                            echo "🗄️ Setting up private registry..."
-
-                            sh """
-                                sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
-                                    docker run -d -p ${params.REGISTRY_PORT}:5000 --restart=always --name ${REGISTRY_NAME} registry:2 || true
-                                '
-                            """
-                        }
-                    }
-                }
-
             }
         }
 
-        /* =============================== WINDOWS SETUP =============================== */
+        stage('Run Compose (Linux)') {
+            when { expression { detectedOS == 'linux' } }
+            steps {
+                script {
+                    echo "🚀 Linux remote machine वर containers deploy करत आहे..."
 
-        stage('Windows Setup') {
-            when {
-                expression { detectedOS == 'windows' }
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                            cd ~/docker-deployment
+                            docker-compose down || true
+                            docker-compose up -d
+                            docker ps -a
+                        "
+                    """
+                }
             }
-            stages {
+        }
 
-                stage('Check Docker on Windows') {
-                    steps {
-                        script {
-                            echo "🪟 Windows: Checking Docker..."
 
-                            def dockerInstalled = sh(
-                                script: """
-                                    sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "docker --version"
-                                """,
-                                returnStdout: true
-                            ).trim()
 
-                            if (!dockerInstalled) {
-                                error("❌ Windows वर Docker Desktop manually install करा!")
-                            }
-                        }
-                    }
+        /* ============================= WINDOWS SETUP ============================= */
+
+        stage('Transfer Compose (Windows)') {
+            when { expression { detectedOS == 'windows' } }
+            steps {
+                script {
+                    echo "📤 Windows: docker-compose.yml transfer करत आहे..."
+
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\docker-deployment 2>nul"
+                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
+                    """
                 }
+            }
+        }
 
-                stage('Setup Docker Registry on Windows') {
-                    steps {
-                        script {
+        stage('Run Compose (Windows)') {
+            when { expression { detectedOS == 'windows' } }
+            steps {
+                script {
+                    echo "🚀 Windows remote machine वर containers deploy करत आहे..."
 
-                            sh """
-                                sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
-                                    docker ps -a | findstr ${REGISTRY_NAME} || docker run -d -p ${params.REGISTRY_PORT}:5000 --restart=always --name ${REGISTRY_NAME} registry:2
-                                "
-                            """
-                        }
-                    }
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                            cd C:\\docker-deployment
+                            docker-compose down || echo no-old-containers
+                            docker-compose up -d
+                            docker ps -a
+                        "
+                    """
                 }
+            }
+        }
 
+
+        /* ============================= VERIFICATION ============================= */
+
+        stage('Verify Containers Running') {
+            steps {
+                script {
+                    echo "✔️ Remote machine वर containers verify करत आहे..."
+
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
+                            echo "==== Docker Status ===="
+                            docker ps -a
+                        '
+                    """
+                }
             }
         }
 
@@ -176,10 +167,10 @@ pipeline {
 
     post {
         success {
-            echo "🎉 SUCCESS: Setup Completed for ${params.REMOTE_IP}"
+            echo "🎉 SUCCESS! Remote machine वर containers चालू झाले!"
         }
         failure {
-            echo "❌ FAILURE: कृपया logs तपासा"
+            echo "❌ FAILURE! कृपया logs तपासा."
         }
     }
 }
