@@ -1,163 +1,138 @@
 pipeline {
     agent any
-    
+
     parameters {
         string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote machine IP address')
-        string(name: 'REMOTE_USER', defaultValue: 'administrator', description: 'Remote machine username')
-        password(name: 'REMOTE_PASSWORD', defaultValue: '', description: 'Remote machine password')
-        string(name: 'REGISTRY_PORT', defaultValue: '5000', description: 'Docker registry port')
+        string(name: 'SSH_USER', defaultValue: '', description: 'SSH username')
+        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH password')
     }
 
     environment {
-        REGISTRY_NAME = "local-registry"
-        POSTGRES_IMAGE = "postgres:15"
-        REDIS_IMAGE = "redis:7-alpine"
+        REGISTRY = "my-registry.example.com:5000"
+        COMPOSE_FILE = "docker-compose.yml"
     }
 
     stages {
 
-        /* ============================= INPUT VALIDATION ============================= */
-
-        stage('Input Validation') {
+        stage('Validate Inputs') {
             steps {
                 script {
-                    if (!params.REMOTE_IP) {
-                        error("❌ Remote IP address आवश्यक आहे!")
+                    if (!params.REMOTE_IP?.trim()) error "REMOTE_IP required"
+                    if (!params.SSH_USER?.trim()) error "SSH_USER required"
+                    if (!params.SSH_PASS?.trim()) error "SSH_PASS required"
+                    if (!fileExists(env.COMPOSE_FILE)) error "docker-compose.yml not found"
+                }
+            }
+        }
+
+        stage('Find Images from Compose') {
+            steps {
+                script {
+                    def images = sh(
+                        script: "grep -E 'image:' ${env.COMPOSE_FILE} | awk '{print \$2}'",
+                        returnStdout: true
+                    ).trim().readLines()
+
+                    if (images.isEmpty()) error "No images found in compose"
+
+                    writeFile file: 'images.list', text: images.join("\n")
+                    echo "Images:\n" + images.join("\n")
+                }
+            }
+        }
+
+        stage('Tag & Push Images') {
+            steps {
+                script {
+                    def images = readFile('images.list').readLines()
+
+                    for (img in images) {
+                        def name = img.contains('/') ? img.substring(img.indexOf('/')+1) : img
+                        def tag = img.contains(":") ? img.split(':')[-1] : "latest"
+                        def target = "${env.REGISTRY}/${name}:${tag}"
+
+                        sh """
+                            docker pull ${img} || true
+                            docker tag ${img} ${target}
+                            docker push ${target}
+                        """
                     }
-                    echo "✅ Remote IP: ${params.REMOTE_IP}"
                 }
             }
         }
 
-
-        /* ============================= DETECT OS ============================= */
-
-        stage('Detect OS') {
+        stage('Generate Remote Script') {
             steps {
                 script {
-                    echo "🔍 Remote machine OS detect करत आहे..."
+                    def scriptText = """
+                    #!/bin/bash
+                    set -e
 
-                    detectedOS = "unknown"
+                    REGISTRY="${env.REGISTRY}"
+                    COMPOSE="${env.COMPOSE_FILE}"
 
-                    // Linux check
-                    try {
-                        def osInfo = sh(
-                            script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${params.REMOTE_USER}@${params.REMOTE_IP} 'uname -s'""",
-                            returnStdout: true
-                        ).trim()
+                    echo "Installing Docker if missing..."
+                    if ! command -v docker >/dev/null; then
+                        if [ -f /etc/debian_version ]; then
+                            apt update -y
+                            apt install -y docker.io
+                        elif [ -f /etc/redhat-release ]; then
+                            yum install -y docker
+                        fi
+                        systemctl enable --now docker
+                    fi
 
-                        if (osInfo.contains("Linux")) {
-                            detectedOS = "linux"
-                            echo "🐧 Linux detected!"
-                        }
-                    } catch(e) {}
+                    echo "Installing docker-compose if missing..."
+                    if ! command -v docker-compose >/dev/null; then
+                        curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m) -o /usr/local/bin/docker-compose
+                        chmod +x /usr/local/bin/docker-compose
+                    fi
 
-                    // Windows check
-                    if (detectedOS == "unknown") {
-                        try {
-                            def winInfo = sh(
-                                script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\"" """,
-                                returnStdout: true
-                            ).trim()
+                    mkdir -p /opt/jenkins_app
+                    cd /opt/jenkins_app
 
-                            if (winInfo) {
-                                detectedOS = "windows"
-                                echo "🪟 Windows detected!"
-                            }
-                        } catch(e) {
-                            detectedOS = "windows"
-                        }
-                    }
+                    echo "Pulling images..."
+                    docker-compose -f ${env.COMPOSE_FILE} pull || true
 
-                    echo "🎯 Final detected OS: ${detectedOS}"
+                    echo "Starting containers..."
+                    docker-compose -f ${env.COMPOSE_FILE} up -d --remove-orphans
+
+                    echo "Running containers:"
+                    docker ps
+                    """
+
+                    writeFile file: "remote.sh", text: scriptText
+                    sh "chmod +x remote.sh"
                 }
             }
         }
 
-
-        /* ============================= LINUX SETUP ============================= */
-
-        stage('Transfer Compose (Linux)') {
-            when { expression { detectedOS == 'linux' } }
+        stage('Copy Files to Remote') {
             steps {
                 script {
-                    echo "📤 Linux: docker-compose.yml transfer करत आहे..."
-
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
-                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:~/docker-deployment/docker-compose.yml
+                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no ${env.COMPOSE_FILE} ${params.SSH_USER}@${params.REMOTE_IP}:/opt/jenkins_app/
+                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no remote.sh ${params.SSH_USER}@${params.REMOTE_IP}:/tmp/
                     """
                 }
             }
         }
 
-        stage('Run Compose (Linux)') {
-            when { expression { detectedOS == 'linux' } }
+        stage('Execute Remote Script') {
             steps {
                 script {
-                    echo "🚀 Linux remote machine वर containers deploy करत आहे..."
-
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
-                            cd ~/docker-deployment
-                            docker-compose down || true
-                            docker-compose up -d
-                            docker ps -a
-                        "
+                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.REMOTE_IP} "sudo bash /tmp/remote.sh"
                     """
                 }
             }
         }
 
-
-
-        /* ============================= WINDOWS SETUP ============================= */
-
-        stage('Transfer Compose (Windows)') {
-            when { expression { detectedOS == 'windows' } }
+        stage('Verify Containers') {
             steps {
                 script {
-                    echo "📤 Windows: docker-compose.yml transfer करत आहे..."
-
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\docker-deployment 2>nul"
-                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
-                    """
-                }
-            }
-        }
-
-        stage('Run Compose (Windows)') {
-            when { expression { detectedOS == 'windows' } }
-            steps {
-                script {
-                    echo "🚀 Windows remote machine वर containers deploy करत आहे..."
-
-                    sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
-                            cd C:\\docker-deployment
-                            docker-compose down || echo no-old-containers
-                            docker-compose up -d
-                            docker ps -a
-                        "
-                    """
-                }
-            }
-        }
-
-
-        /* ============================= VERIFICATION ============================= */
-
-        stage('Verify Containers Running') {
-            steps {
-                script {
-                    echo "✔️ Remote machine वर containers verify करत आहे..."
-
-                    sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
-                            echo "==== Docker Status ===="
-                            docker ps -a
-                        '
+                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.REMOTE_IP} "docker ps"
                     """
                 }
             }
@@ -166,11 +141,7 @@ pipeline {
     }
 
     post {
-        success {
-            echo "🎉 SUCCESS! Remote machine वर containers चालू झाले!"
-        }
-        failure {
-            echo "❌ FAILURE! कृपया logs तपासा."
-        }
+        success { echo "Pipeline Successful!" }
+        failure { echo "Pipeline Failed!" }
     }
 }
