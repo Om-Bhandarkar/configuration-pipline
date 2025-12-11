@@ -1,181 +1,142 @@
+
+
 pipeline {
   agent any
 
   parameters {
-    string(name: 'TARGET_IP', defaultValue: '', description: 'Target machine IP')
-    string(name: 'TARGET_USER', defaultValue: 'admin', description: 'Username to login')
-    password(name: 'TARGET_PASSWORD', defaultValue: '', description: 'Password for SSH/PowerShell')
+    string(name: 'TARGET_IP', defaultValue: '', description: 'Remote host IP')
+    string(name: 'TARGET_USER', defaultValue: 'ubuntu', description: 'Remote SSH user')
   }
 
-  environment {
-    DETECTED_OS = ''
+  options {
+    timestamps()
+    ansiColor('xterm')
   }
 
   stages {
-
-    stage('Validate Input') {
+    stage('Validate params') {
       steps {
         script {
           if (!params.TARGET_IP?.trim()) {
-            error "TARGET_IP आवश्यक आहे."
+            error "TARGET_IP is required"
           }
-        }
-      }
-    }
-
-    stage('Ping Target') {
-      steps {
-        script {
-          if (sh(returnStatus: true, script: "ping -c 2 ${params.TARGET_IP}") != 0) {
-            error "❌ Target ping होत नाही."
+          if (!params.TARGET_USER?.trim()) {
+            error "TARGET_USER is required"
           }
-          echo "✔ Target reachable."
+          echo "Will run pipeline against ${params.TARGET_USER}@${params.TARGET_IP}"
         }
       }
     }
 
-    stage('Check SSH with Password') {
+    stage('Prepare remote (OS detect & basic tools)') {
       steps {
-        script {
-          def USER = params.TARGET_USER
-          def PASS = params.TARGET_PASSWORD
-
-          def ok = sh(returnStatus: true, script: """
-            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${USER}@${params.TARGET_IP} "echo OK" 2>/dev/null
-          """)
-
-          if (ok == 0) {
-            echo "✔ SSH password login working."
-          } else {
-            echo "⚠ SSH not responding — checking if Windows without OpenSSH..."
-          }
+        withCredentials([sshUserPrivateKey(credentialsId: 'remote_ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} 'uname -s || true' | sed -n '1p'"
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} 'sudo apt-get update -y && sudo apt-get install -y ufw curl ca-certificates'"
         }
       }
     }
 
-    stage('Detect OS') {
+    stage('Firewall & SSH hardening') {
       steps {
-        script {
-          def USER = params.TARGET_USER
-          def PASS = params.TARGET_PASSWORD
-    
-          // Run uname, fallback to WINDOWS
-          def raw = sh(returnStdout:true, script: """
-            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "uname -s" 2>/dev/null || echo WINDOWS
-          """).trim()
-    
-          // Clean the output
-          def clean = raw
-              .replaceAll("[^A-Za-z]","")      // keep only letters
-              .toLowerCase()                   // lowercase
-              .trim()
-    
-          // Detection
-          if (clean.contains("linux")) {
-            env.DETECTED_OS = "LINUX"
-          } else if (clean.contains("windows")) {
-            env.DETECTED_OS = "WINDOWS"
-          } else {
-            env.DETECTED_OS = "UNKNOWN"
-          }
-    
-          echo "✔ Cleaned Output: ${clean}"
-          echo "✔ Detected OS = ${env.DETECTED_OS}"
+        withCredentials([sshUserPrivateKey(credentialsId: 'remote_ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          // Allow default SSH (22) and registry (5000) first to avoid locking out
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"sudo ufw allow 22/tcp && sudo ufw allow 5000/tcp && sudo ufw --force enable\""
+
+          // Example of minimal sshd hardening: disable root login and protocol tweaks
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"sudo sed -i -e 's/^#PermitRootLogin.*/PermitRootLogin no/' -e 's/^#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config || true && sudo systemctl restart sshd || true\""
         }
       }
     }
 
-
-    stage('Windows: Install OpenSSH If Missing') {
-      when { expression { env.DETECTED_OS == "WINDOWS" } }
+    stage('Install Docker & Docker Compose on remote') {
       steps {
-        script {
-          def USER = params.TARGET_USER
-          def PASS = params.TARGET_PASSWORD
-
-          echo "🔍 Checking if Windows OpenSSH is installed..."
-
-          // Check & Install OpenSSH Server
-          sh """
-            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
-              powershell.exe -Command \\\"
-                \$pkg = Get-WindowsCapability -Online | Where-Object { \$_.Name -like 'OpenSSH.Server*' };
-
-                if (\$pkg.State -ne 'Installed') {
-                  Write-Output '➡ Installing OpenSSH Server...';
-                  Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0;
-                } else {
-                  Write-Output '✔ OpenSSH already installed.';
-                }
-              \\\"
-            "
-          """
-
-          // Enable & Start sshd
-          sh """
-            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
-              powershell.exe -Command \\\"
-                Set-Service sshd -StartupType Automatic;
-                Start-Service sshd;
-              \\\"
-            "
-          """
-
-          // Open firewall port 22
-          sh """
-            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
-              powershell.exe -Command \\\"
-                if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH Port 22' -ErrorAction SilentlyContinue)) {
-                  New-NetFirewallRule -DisplayName 'OpenSSH Port 22' -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow;
-                }
-              \\\"
-            "
-          """
-
-          echo "✔ Windows OpenSSH installation complete!"
+        withCredentials([sshUserPrivateKey(credentialsId: 'remote_ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"curl -fsSL https://get.docker.com | sudo sh\""
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"sudo curl -L 'https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)' -o /usr/local/bin/docker-compose && sudo chmod +x /usr/local/bin/docker-compose || true\""
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} 'sudo usermod -aG docker ${params.TARGET_USER} || true'"
         }
       }
     }
 
-    stage('Run OS Specific Commands') {
+    stage('Deploy docker-compose (registry, postgres, redis)') {
       steps {
-        script {
-          def USER = params.TARGET_USER
-          def PASS = params.TARGET_PASSWORD
+        // Create docker-compose.yml locally and copy to remote
+        writeFile file: 'docker-compose.yml', text: '''version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: example
+      POSTGRES_USER: admin
+    ports:
+      - "5432:5432"
 
-          if (env.DETECTED_OS == "LINUX") {
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
 
-            echo "➡ Running Linux Commands..."
-            sh """
-              sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
-                echo 'Connected to Linux via password!'
-              "
-            """
+  registry:
+    image: registry:2
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry_volume:/var/lib/registry
 
-          } else {
+volumes:
+  registry_volume:
+'''
 
-            echo "➡ Running Windows Commands..."
-            sh """
-              sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
-                powershell.exe -Command \\\"
-                  Write-Output 'Connected to Windows using password!'
-                \\\"
-              "
-            """
-
-          }
+        withCredentials([sshUserPrivateKey(credentialsId: 'remote_ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          sh "scp -i ${SSH_KEY} -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${params.TARGET_IP}:~/docker-compose.yml"
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} 'docker-compose -f ~/docker-compose.yml up -d'"
         }
       }
     }
 
+    stage('Push images into remote private registry (built on remote)') {
+      steps {
+        // We'll perform pull/tag/push on remote itself to avoid insecure-registry issues
+        withCredentials([sshUserPrivateKey(credentialsId: 'remote_ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          // Pull official images on remote, tag to registry, push
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"docker pull postgres:16 && docker tag postgres:16 localhost:5000/postgres-custom:latest && docker push localhost:5000/postgres-custom:latest\""
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"docker pull redis:latest && docker tag redis:latest localhost:5000/redis-custom:latest && docker push localhost:5000/redis-custom:latest\""
+        }
+      }
+    }
+
+    stage('Run containers from registry on remote') {
+      steps {
+        withCredentials([sshUserPrivateKey(credentialsId: 'remote_ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          // login not required for default registry; but show how if credentials existed
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"docker pull localhost:5000/postgres-custom:latest && docker pull localhost:5000/redis-custom:latest\""
+
+          // Stop any previous containers (safe restart)
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"docker rm -f pg-custom || true && docker rm -f redis-custom || true\""
+
+          // Run new containers with basic options
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"docker run -d --name pg-custom -e POSTGRES_PASSWORD=example -e POSTGRES_USER=admin -p 5432:5432 localhost:5000/postgres-custom:latest\""
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} \"docker run -d --name redis-custom -p 6379:6379 localhost:5000/redis-custom:latest\""
+        }
+      }
+    }
+
+    stage('Verify remote containers') {
+      steps {
+        withCredentials([sshUserPrivateKey(credentialsId: 'remote_ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+          sh "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${params.TARGET_IP} 'docker ps --format \"{{.Names}}\t{{.Image}}\t{{.Status}}\"'"
+        }
+      }
+    }
   }
 
   post {
     success {
-      echo "🎉 Pipeline Completed Successfully (Password Only Mode)"
+      echo 'Pipeline completed successfully.'
     }
     failure {
-      echo "❌ Pipeline Failed — तपशील वर पाहा."
+      echo 'Pipeline failed — check logs.'
     }
   }
 }
