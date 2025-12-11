@@ -1,173 +1,176 @@
 pipeline {
     agent any
-
+    
     parameters {
-        string(name: 'TARGET_IP', description: 'Target Server IP')
-        string(name: 'SSH_USER', defaultValue: 'root', description: 'SSH Username')
-        password(name: 'SSH_PASS', description: 'SSH Password')
+        string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote machine IP address')
+        string(name: 'REMOTE_USER', defaultValue: 'administrator', description: 'Remote machine username')
+        password(name: 'REMOTE_PASSWORD', defaultValue: '', description: 'Remote machine password')
+        string(name: 'REGISTRY_PORT', defaultValue: '5000', description: 'Docker registry port')
     }
 
     environment {
-        OS_TYPE = ""
-        COMPOSE_DIR_LINUX  = "/infra"
-        COMPOSE_FILE_LINUX = "/infra/docker-compose.yml"
-
-        COMPOSE_DIR_WIN    = "C:/infra"
-        COMPOSE_FILE_WIN   = "C:/infra/docker-compose.yml"
+        REGISTRY_NAME = "local-registry"
+        POSTGRES_IMAGE = "postgres:15"
+        REDIS_IMAGE = "redis:7-alpine"
     }
 
     stages {
 
-        /* -------------------------
-           1) CHECK CONNECTION
-        ------------------------- */
-        stage("Check Connection") {
-            steps {
-                sh """
-                    sshpass -p "${params.SSH_PASS}" \
-                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "echo Connected OK"
-                """
-            }
-        }
+        /* ============================= INPUT VALIDATION ============================= */
 
-        /* -------------------------
-           2) DETECT OS
-        ------------------------- */
-           stage("Detect OS") {
-                steps {
-                    echo "🔍 Detecting OS..."
-                    script {
-            
-                        // --- Try Linux check first ---
-                        def linuxCheck = sh(
-                            returnStdout: true,
-                            script: """
-                                sshpass -p "${params.SSH_PASS}" \
-                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "uname" || true
-                            """
-                        ).trim()
-            
-                        echo "Linux check output: ${linuxCheck}"
-            
-                        if (linuxCheck.toLowerCase().contains("linux")) {
-                            env.OS_TYPE = "linux"
-                            echo "🖥️ OS Detected: Linux"
-                            return
-                        }
-            
-                        // --- Try Windows check ---
-                        def winCheck = sh(
-                            returnStdout: true,
-                            script: """
-                                sshpass -p "${params.SSH_PASS}" \
-                                ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                                "powershell -command \\\"[System.Environment]::OSVersion.Platform\\\""
-                            """
-                        ).trim()
-            
-                        echo "Windows check output: ${winCheck}"
-            
-                        if (winCheck.toLowerCase().contains("win32nt")) {
-                            env.OS_TYPE = "windows"
-                            echo "🖥️ OS Detected: Windows"
-                            return
-                        }
-            
-                        error "❌ Could not detect OS! Linux output: ${linuxCheck}, Windows output: ${winCheck}"
-                    }
-                }
-            }
-
-
-
-        /* -------------------------
-           3) INSTALL DOCKER (LINUX)
-        ------------------------- */
-        stage("Install Docker (Linux)") {
-            when { expression { env.OS_TYPE == "linux" } }
-            steps {
-                sh """
-                    sshpass -p "${params.SSH_PASS}" \
-                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
-                        if ! command -v docker >/dev/null; then
-                            apt-get update -y || yum update -y
-                            apt-get install -y docker.io || yum install -y docker
-                            systemctl start docker || true
-                            systemctl enable docker || true
-                        fi
-
-                        if ! command -v docker-compose >/dev/null; then
-                            curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
-                                -o /usr/local/bin/docker-compose
-                            chmod +x /usr/local/bin/docker-compose
-                        fi
-                    '
-                """
-            }
-        }
-
-        /* -------------------------
-           4) INSTALL DOCKER (WINDOWS)
-        ------------------------- */
-        stage("Install Docker (Windows)") {
-            when { expression { env.OS_TYPE == "windows" } }
-            steps {
-                sh """
-                    sshpass -p "${params.SSH_PASS}" \
-                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} \
-                    "powershell -Command \\"Write-Host 'Windows detected. Install Docker Desktop manually or via winget.'\\""
-                """
-            }
-        }
-
-        /* -------------------------
-           5) UPLOAD COMPOSE FILE (OS-wise)
-        ------------------------- */
-        stage("Upload docker-compose.yml") {
+        stage('Input Validation') {
             steps {
                 script {
-
-                    if (env.OS_TYPE == "linux") {
-                        sh """
-                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "mkdir -p ${COMPOSE_DIR_LINUX}"
-                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_LINUX}
-                        """
+                    if (!params.REMOTE_IP) {
+                        error("❌ Remote IP address आवश्यक आहे!")
                     }
-
-                    if (env.OS_TYPE == "windows") {
-                        sh """
-                            sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} "powershell -Command \\"New-Item -ItemType Directory -Force -Path '${COMPOSE_DIR_WIN}'\\""
-                            sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no docker-compose.yml ${params.SSH_USER}@${params.TARGET_IP}:${COMPOSE_FILE_WIN}
-                        """
-                    }
+                    echo "✅ Remote IP: ${params.REMOTE_IP}"
                 }
             }
         }
 
-        /* -------------------------
-           6) RUN COMPOSE (LINUX ONLY)
-        ------------------------- */
-        stage("Run docker-compose (Linux)") {
-            when { expression { env.OS_TYPE == "linux" } }
+
+        /* ============================= DETECT OS ============================= */
+
+        stage('Detect OS') {
             steps {
-                sh """
-                    sshpass -p "${params.SSH_PASS}" \
-                    ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
-                        cd ${COMPOSE_DIR_LINUX}
-                        docker-compose down || true
-                        docker-compose up -d
-                    '
-                """
+                script {
+                    echo "🔍 Remote machine OS detect करत आहे..."
+
+                    detectedOS = "unknown"
+
+                    // Linux check
+                    try {
+                        def osInfo = sh(
+                            script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${params.REMOTE_USER}@${params.REMOTE_IP} 'uname -s'""",
+                            returnStdout: true
+                        ).trim()
+
+                        if (osInfo.contains("Linux")) {
+                            detectedOS = "linux"
+                            echo "🐧 Linux detected!"
+                        }
+                    } catch(e) {}
+
+                    // Windows check
+                    if (detectedOS == "unknown") {
+                        try {
+                            def winInfo = sh(
+                                script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\"" """,
+                                returnStdout: true
+                            ).trim()
+
+                            if (winInfo) {
+                                detectedOS = "windows"
+                                echo "🪟 Windows detected!"
+                            }
+                        } catch(e) {
+                            detectedOS = "windows"
+                        }
+                    }
+
+                    echo "🎯 Final detected OS: ${detectedOS}"
+                }
             }
         }
 
-        /* -------------------------
-           WINDOWS IS NOT SUPPORTED FOR docker-compose directly here
-        ------------------------- */
+
+        /* ============================= LINUX SETUP ============================= */
+
+        stage('Transfer Compose (Linux)') {
+            when { expression { detectedOS == 'linux' } }
+            steps {
+                script {
+                    echo "📤 Linux: docker-compose.yml transfer करत आहे..."
+
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
+                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:~/docker-deployment/docker-compose.yml
+                    """
+                }
+            }
+        }
+
+        stage('Run Compose (Linux)') {
+            when { expression { detectedOS == 'linux' } }
+            steps {
+                script {
+                    echo "🚀 Linux remote machine वर containers deploy करत आहे..."
+
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                            cd ~/docker-deployment
+                            docker-compose down || true
+                            docker-compose up -d
+                            docker ps -a
+                        "
+                    """
+                }
+            }
+        }
+
+
+
+        /* ============================= WINDOWS SETUP ============================= */
+
+        stage('Transfer Compose (Windows)') {
+            when { expression { detectedOS == 'windows' } }
+            steps {
+                script {
+                    echo "📤 Windows: docker-compose.yml transfer करत आहे..."
+
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\docker-deployment 2>nul"
+                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
+                    """
+                }
+            }
+        }
+
+        stage('Run Compose (Windows)') {
+            when { expression { detectedOS == 'windows' } }
+            steps {
+                script {
+                    echo "🚀 Windows remote machine वर containers deploy करत आहे..."
+
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                            cd C:\\docker-deployment
+                            docker-compose down || echo no-old-containers
+                            docker-compose up -d
+                            docker ps -a
+                        "
+                    """
+                }
+            }
+        }
+
+
+        /* ============================= VERIFICATION ============================= */
+
+        stage('Verify Containers Running') {
+            steps {
+                script {
+                    echo "✔️ Remote machine वर containers verify करत आहे..."
+
+                    sh """
+                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
+                            echo "==== Docker Status ===="
+                            docker ps -a
+                        '
+                    """
+                }
+            }
+        }
+
     }
 
     post {
-        success { echo "🎉 Deployment Successful" }
-        failure { echo "❌ Deployment Failed" }
+        success {
+            echo "🎉 SUCCESS! Remote machine वर containers चालू झाले!"
+        }
+        failure {
+            echo "❌ FAILURE! कृपया logs तपासा."
+        }
     }
 }
