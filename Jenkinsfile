@@ -32,18 +32,30 @@ pipeline {
          * 2️⃣ DETECT OS
          * -------------------------------------------------------*/
         stage("Detect OS") {
-            steps {
-                script {
-                    def out = sh(script: """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no \
-                        -o ConnectTimeout=5 ${params.REMOTE_USER}@${params.REMOTE_IP} "uname -s" 2>/dev/null || echo FAILED
-                    """, returnStdout:true).trim()
-
-                    env.DETECTED_OS = out.contains("Linux") ? "linux" : "windows"
-                    echo "🎯 Detected OS: ${env.DETECTED_OS}"
+                steps {
+                    script {
+                        echo "🔍 Detecting remote OS..."
+            
+                        def result = sh(script: """
+                            sshpass -p '${params.REMOTE_PASSWORD}' \
+                            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+                            ${params.REMOTE_USER}@${params.REMOTE_IP} "uname -s" 2>/dev/null
+                        """, returnStdout:true).trim()
+            
+                        if (result == "" || result == "FAILED" || result == null) {
+                            echo "⚠️ SSH uname failed → assuming Windows"
+                            env.DETECTED_OS = "windows"
+                        } else if (result.contains("Linux")) {
+                            env.DETECTED_OS = "linux"
+                        } else {
+                            env.DETECTED_OS = "windows"
+                        }
+            
+                        echo "🎯 Final Detected OS: ${env.DETECTED_OS}"
+                    }
                 }
             }
-        }
+
 
         /* -------------------------------------------------------
          * 3️⃣ INSTALL DOCKER & COMPOSE (LINUX)
@@ -227,14 +239,19 @@ All health checks passed ✔✔✔
 
 def shOrBatRemote(cmd) {
     if (env.DETECTED_OS == "linux") {
-        sh """sshpass -p '${params.REMOTE_PASSWORD}' \
-        ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} '${cmd}'"""
+        sh """sshpass -p '${params.REMOTE_PASSWORD}' ssh \
+        -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} '${cmd}'"""
     } else {
-        bat """sshpass -p ${params.REMOTE_PASSWORD} \
-        ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "${cmd}" """
+        sh """sshpass -p '${params.REMOTE_PASSWORD}' ssh \
+        ${params.REMOTE_USER}@${params.REMOTE_IP} "${cmd}" """
     }
 }
 
 def shOrBat(cmd) {
-    if (env.DETECTED_OS == "linux") sh(cmd) else bat(cmd)
+    if (isUnix()) {
+        sh(cmd)
+    } else {
+        bat(cmd)
+    }
 }
+
