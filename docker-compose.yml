@@ -13,7 +13,7 @@ services:
 
   postgres:
     container_name: infra-postgres
-    image: postgres:latest
+    image: localhost:5000/postgres:latest
     environment:
       POSTGRES_PASSWORD: example
     ports:
@@ -22,7 +22,7 @@ services:
 
   redis:
     container_name: infra-redis
-    image: redis:latest
+    image: localhost:5000/redis:latest
     ports:
       - "6379:6379"
     restart: unless-stopped
