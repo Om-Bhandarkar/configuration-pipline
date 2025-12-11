@@ -32,29 +32,37 @@ pipeline {
          * 2️⃣ DETECT OS
          * -------------------------------------------------------*/
         stage("Detect OS") {
-                steps {
-                    script {
-                        echo "🔍 Detecting remote OS..."
-            
-                        def result = sh(script: """
+            steps {
+                script {
+                    echo "🔍 Detecting remote OS..."
+        
+                    def result = ""
+                    def status = sh(
+                        script: """
                             sshpass -p '${params.REMOTE_PASSWORD}' \
                             ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-                            ${params.REMOTE_USER}@${params.REMOTE_IP} "uname -s" 2>/dev/null
-                        """, returnStdout:true).trim()
-            
-                        if (result == "" || result == "FAILED" || result == null) {
-                            echo "⚠️ SSH uname failed → assuming Windows"
-                            env.DETECTED_OS = "windows"
-                        } else if (result.contains("Linux")) {
-                            env.DETECTED_OS = "linux"
-                        } else {
-                            env.DETECTED_OS = "windows"
-                        }
-            
-                        echo "🎯 Final Detected OS: ${env.DETECTED_OS}"
+                            ${params.REMOTE_USER}@${params.REMOTE_IP} "uname -s" || echo SSH_FAILED
+                        """,
+                        returnStdout: true
+                    ).trim()
+        
+                    echo "OS Detect Raw Output: '${status}'"
+        
+                    if (status == "" || status.contains("SSH_FAILED") || status.contains("Permission denied")) {
+                        echo "⚠️ SSH failed — Assuming Windows."
+                        env.DETECTED_OS = "windows"
+                    } else if (status.contains("Linux")) {
+                        env.DETECTED_OS = "linux"
+                    } else {
+                        echo "⚠️ uname output unknown — Assuming Windows."
+                        env.DETECTED_OS = "windows"
                     }
+        
+                    echo "🎯 Final Detected OS: ${env.DETECTED_OS}"
                 }
             }
+        }
+
 
 
         /* -------------------------------------------------------
