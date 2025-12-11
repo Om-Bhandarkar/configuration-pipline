@@ -10,9 +10,6 @@ pipeline {
     
     environment {
         DETECTED_OS = ''
-    }
-    
-    environment {
         REGISTRY_NAME = "local-registry"
         POSTGRES_IMAGE = "postgres:15"
         REDIS_IMAGE = "redis:7-alpine"
