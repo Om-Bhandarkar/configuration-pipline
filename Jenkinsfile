@@ -22,7 +22,7 @@ pipeline {
             steps {
                 script {
                     if (!params.REMOTE_IP) {
-                        error("❌ Remote IP address आवश्यक आहे!")
+                        error("❌ Remote IP आवश्यक आहे!")
                     }
                     echo "✅ Remote IP: ${params.REMOTE_IP}"
                 }
@@ -63,7 +63,8 @@ pipeline {
                                 script: """
                                     sshpass -p '${params.REMOTE_PASSWORD}' \
                                     ssh -o StrictHostKeyChecking=no \
-                                    ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\"" 
+                                    ${params.REMOTE_USER}@${params.REMOTE_IP} \
+                                    "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\""
                                 """,
                                 returnStdout: true
                             ).trim()
@@ -93,15 +94,18 @@ pipeline {
                     echo "📤 Linux: docker-compose.yml transfer करत आहे..."
 
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
-                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:~/docker-deployment/docker-compose.yml
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
+
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:~/docker-deployment/docker-compose.yml
                     """
                 }
             }
         }
 
 
-        /* ------------------------ WINDOWS SETUP ------------------------ */
+        /* ------------------------ WINDOWS SETUP (FIXED) ------------------------ */
 
         stage('Windows Setup') {
             when { expression { env.detectedOS == 'windows' } }
@@ -110,9 +114,11 @@ pipeline {
                     echo "📤 Windows: docker-compose.yml transfer करत आहे..."
 
                     sh """
+                        # Create directory using FORWARD SLASH (Windows SSH friendly)
                         sshpass -p '${params.REMOTE_PASSWORD}' \
-                        ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\\\docker-deployment 2>nul"
+                        ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:/docker-deployment 2>nul"
 
+                        # Copy compose file using forward slashes
                         sshpass -p '${params.REMOTE_PASSWORD}' \
                         scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
                     """
