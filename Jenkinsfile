@@ -90,10 +90,10 @@ pipeline {
 
           // Detect OS
           def osCheck = sh(returnStdout:true, script: """
-            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "uname -s" 2>/dev/null
+            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "uname -s" 2>/dev/null || true
           """).trim()
 
-          env.DETECTED_OS = osCheck.toLowerCase().contains("linux") ? "LINUX" : "WINDOWS"
+          env.DETECTED_OS = osCheck?.toLowerCase()?.contains("linux") ? "LINUX" : "WINDOWS"
           echo "✔ Detected OS = ${env.DETECTED_OS}"
 
           // -----------------------------
@@ -118,29 +118,38 @@ pipeline {
           }
 
           // -----------------------------
-          // WINDOWS SETUP — FULL AUTO INSTALL
+          // WINDOWS SETUP — FULL AUTO INSTALL + RELIABLE KEY INJECTION
           // -----------------------------
           else {
 
-            echo "✔ Windows detected — Auto-installing OpenSSH..."
+            echo "✔ Windows detected — Auto-installing OpenSSH if required and injecting keys..."
 
             // Install OpenSSH Server if missing
             sh """
               sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
                 powershell.exe -Command \\\"
-                  if (-not (Get-WindowsCapability -Online | Where-Object { \$_.Name -like 'OpenSSH.Server*' -and \$_.State -eq 'Installed' })) {
+                  Try {
+                    \$cap = Get-WindowsCapability -Online | Where-Object { \$_.Name -like 'OpenSSH.Server*' };
+                    if (-not \$cap -or \$cap.State -ne 'Installed') {
+                      Write-Output 'Installing OpenSSH.Server...';
                       Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0;
+                    } else {
+                      Write-Output 'OpenSSH.Server already installed.';
+                    }
+                  } Catch {
+                    Write-Output 'OpenSSH installation check/install failed: ' + \$_;
+                    exit 1;
                   }
                 \\\"
               "
             """
 
-            // Enable & Start SSHD
+            // Enable & Start SSHD service
             sh """
               sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
                 powershell.exe -Command \\\"
-                  Set-Service -Name sshd -StartupType Automatic;
-                  Start-Service sshd;
+                  Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue;
+                  Start-Service sshd -ErrorAction SilentlyContinue;
                 \\\"
               "
             """
@@ -149,25 +158,43 @@ pipeline {
             sh """
               sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
                 powershell.exe -Command \\\"
-                  if (!(Get-NetFirewallRule -DisplayName 'OpenSSH Port 22' -ErrorAction SilentlyContinue)) {
+                  if (-not (Get-NetFirewallRule -DisplayName 'OpenSSH Port 22' -ErrorAction SilentlyContinue)) {
                       New-NetFirewallRule -DisplayName 'OpenSSH Port 22' -Direction Inbound -LocalPort 22 -Protocol TCP -Action Allow;
                   }
                 \\\"
               "
             """
 
-            // Add SSH Public Key
+            // RELIABLE: write to ProgramData administrators_authorized_keys and user's authorized_keys; set permissions
             sh """
               sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
                 powershell.exe -Command \\\"
-                  \$d = Join-Path \$env:USERPROFILE '.ssh';
-                  if (!(Test-Path \$d)) { New-Item -ItemType Directory -Path \$d -Force };
-                  Add-Content -Path (Join-Path \$d 'authorized_keys') -Value '${env.SSH_PUB}';
+                  Try {
+                    \$adminKey = 'C:/ProgramData/ssh/administrators_authorized_keys';
+                    if (!(Test-Path 'C:/ProgramData/ssh')) { New-Item -ItemType Directory -Path 'C:/ProgramData/ssh' -Force | Out-Null }
+
+                    # Append key to admin file
+                    '${env.SSH_PUB}' | Out-File -FilePath \$adminKey -Encoding ascii -Append
+
+                    # Fix admin file permissions
+                    icacls \$adminKey /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
+
+                    # User-level authorized_keys
+                    \$userSsh = Join-Path \$env:USERPROFILE '.ssh';
+                    if (!(Test-Path \$userSsh)) { New-Item -ItemType Directory -Path \$userSsh -Force | Out-Null }
+                    '${env.SSH_PUB}' | Out-File -FilePath (Join-Path \$userSsh 'authorized_keys') -Encoding ascii -Append
+
+                    # Fix user authorized_keys permissions
+                    icacls (Join-Path \$userSsh 'authorized_keys') /inheritance:r /grant \$env:USERNAME':F' | Out-Null
+                  } Catch {
+                    Write-Output 'Failed to write key or set permissions: ' + \$_;
+                    exit 1;
+                  }
                 \\\"
               "
             """
 
-            echo "✔ Windows OpenSSH auto-install + key setup complete."
+            echo "✔ Windows OpenSSH auto-install + reliable key injection complete."
           }
         }
       }
@@ -176,8 +203,12 @@ pipeline {
     stage('Verify Passwordless SSH') {
       steps {
         script {
+          // try several times briefly to allow service start
           def ok = sh(returnStatus: true, script: """
-            ssh -o BatchMode=yes -o StrictHostKeyChecking=no ${params.TARGET_IP} "echo OK"
+            for i in 1 2 3; do
+              ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=4 ${params.TARGET_IP} "echo OK" && exit 0 || sleep 2
+            done
+            exit 1
           """)
 
           if (ok != 0) error "❌ Passwordless SSH still NOT working!"
