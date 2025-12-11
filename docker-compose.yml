@@ -1,31 +1,24 @@
 version: "3.8"
 
 services:
-
-  registry:
-    container_name: private-registry
-    image: registry:2
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
-    volumes:
-      - registry_data:/var/lib/registry
-
-  postgres:
-    container_name: infra-postgres
-    image: localhost:5000/postgres:latest
-    environment:
-      POSTGRES_PASSWORD: example
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-
   redis:
-    container_name: infra-redis
-    image: localhost:5000/redis:latest
+    image: redis:latest
+    container_name: redis_server
     ports:
       - "6379:6379"
-    restart: unless-stopped
 
-volumes:
-  registry_data:
+  postgres:
+    image: postgres:latest
+    container_name: db_server
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: espl@2017
+      POSTGRES_DB: postgres_db
+    ports:
+      - "5432:5432"
+
+  registry:
+    image: registry:2
+    container_name: private_registry
+    ports:
+      - "5000:5000"
