@@ -3,7 +3,7 @@ pipeline {
     
     parameters {
         string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote machine IP address')
-        string(name: 'REMOTE_USER', defaultValue: 'administrator', description: 'Remote machine username')
+        string(name: 'REMOTE_USER', defaultValue: 'jtsm', description: 'Remote machine username')
         password(name: 'REMOTE_PASSWORD', defaultValue: '', description: 'Remote machine password')
         string(name: 'REGISTRY_PORT', defaultValue: '5000', description: 'Docker registry port')
     }
@@ -16,12 +16,13 @@ pipeline {
 
     stages {
 
-        /* -------------------- INPUT VALIDATION -------------------- */
+        /* ------------------------ INPUT VALIDATION ------------------------ */
+
         stage('Input Validation') {
             steps {
                 script {
                     if (!params.REMOTE_IP) {
-                        error("❌ Remote IP आवश्यक आहे!")
+                        error("❌ Remote IP address आवश्यक आहे!")
                     }
                     echo "✅ Remote IP: ${params.REMOTE_IP}"
                 }
@@ -29,7 +30,8 @@ pipeline {
         }
 
 
-        /* -------------------- OS DETECTION -------------------- */
+        /* ------------------------ OS DETECTION ------------------------ */
+
         stage('Detect OS') {
             steps {
                 script {
@@ -40,7 +42,11 @@ pipeline {
                     // Linux detection
                     try {
                         def osInfo = sh(
-                            script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${params.REMOTE_USER}@${params.REMOTE_IP} "uname -s" """,
+                            script: """
+                                sshpass -p '${params.REMOTE_PASSWORD}' \
+                                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+                                ${params.REMOTE_USER}@${params.REMOTE_IP} "uname -s"
+                            """,
                             returnStdout: true
                         ).trim()
 
@@ -54,7 +60,11 @@ pipeline {
                     if (detected == "unknown") {
                         try {
                             def winInfo = sh(
-                                script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\"" """,
+                                script: """
+                                    sshpass -p '${params.REMOTE_PASSWORD}' \
+                                    ssh -o StrictHostKeyChecking=no \
+                                    ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\"" 
+                                """,
                                 returnStdout: true
                             ).trim()
 
@@ -68,20 +78,19 @@ pipeline {
                     }
 
                     echo "🎯 Final detected OS: ${detected}"
-
-                    // Store globally
                     env.detectedOS = detected
                 }
             }
         }
 
 
-        /* -------------------- LINUX SETUP -------------------- */
+        /* ------------------------ LINUX SETUP ------------------------ */
+
         stage('Linux Setup') {
             when { expression { env.detectedOS == 'linux' } }
             steps {
                 script {
-                    echo "📤 Linux: docker-compose.yml transferring..."
+                    echo "📤 Linux: docker-compose.yml transfer करत आहे..."
 
                     sh """
                         sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
@@ -92,30 +101,33 @@ pipeline {
         }
 
 
-        /* -------------------- WINDOWS SETUP -------------------- */
+        /* ------------------------ WINDOWS SETUP ------------------------ */
+
         stage('Windows Setup') {
             when { expression { env.detectedOS == 'windows' } }
             steps {
                 script {
-                    echo "📤 Windows: docker-compose.yml transferring..."
+                    echo "📤 Windows: docker-compose.yml transfer करत आहे..."
 
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\\\docker-deployment 2>nul"
-                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\\\docker-deployment 2>nul"
+
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
                     """
                 }
             }
         }
 
-
     }
 
     post {
         success {
-            echo "🎉 SUCCESS! Containers deployed!"
+            echo "🎉 SUCCESS! Setup Completed!"
         }
         failure {
-            echo "❌ Pipeline Failed — कृपया errors बघा."
+            echo "❌ Pipeline Failed — कृपया logs तपासा."
         }
     }
 }
