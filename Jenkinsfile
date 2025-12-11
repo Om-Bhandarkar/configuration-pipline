@@ -19,7 +19,7 @@ pipeline {
                 script {
                     if (!params.REMOTE_IP?.trim()) error "REMOTE_IP required"
                     if (!params.SSH_USER?.trim()) error "SSH_USER required"
-                    if (!params.SSH_PASS?.trim()) error "SSH_PASS required"
+                    if (!params.SSH_PASS) error "SSH_PASS required"   // FIXED
                     if (!fileExists(env.COMPOSE_FILE)) error "docker-compose.yml not found"
                 }
             }
