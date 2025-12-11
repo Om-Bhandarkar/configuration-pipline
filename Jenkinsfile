@@ -59,18 +59,27 @@ pipeline {
           def USER = params.TARGET_USER
           def PASS = params.TARGET_PASSWORD
     
-          def out = sh(returnStdout:true, script: """
+          // Run uname, fallback to WINDOWS
+          def raw = sh(returnStdout:true, script: """
             sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "uname -s" 2>/dev/null || echo WINDOWS
-          """).trim().toLowerCase()
+          """).trim()
     
-          if (out.contains("linux")) {
+          // Clean the output
+          def clean = raw
+              .replaceAll("[^A-Za-z]","")      // keep only letters
+              .toLowerCase()                   // lowercase
+              .trim()
+    
+          // Detection
+          if (clean.contains("linux")) {
             env.DETECTED_OS = "LINUX"
-          } else if (out.contains("windows")) {
+          } else if (clean.contains("windows")) {
             env.DETECTED_OS = "WINDOWS"
           } else {
             env.DETECTED_OS = "UNKNOWN"
           }
     
+          echo "✔ Cleaned Output: ${clean}"
           echo "✔ Detected OS = ${env.DETECTED_OS}"
         }
       }
