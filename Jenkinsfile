@@ -14,8 +14,8 @@ pipeline {
     
     environment {
         REGISTRY_NAME = "local-registry"
-        POSTGRES_IMAGE = "postgres:latest"
-        REDIS_IMAGE = "redis:latest"
+        POSTGRES_IMAGE = "postgres:15"
+        REDIS_IMAGE = "redis:7-alpine"
     }
     
     stages {
@@ -26,7 +26,6 @@ pipeline {
                         error("❌ Remote IP address आवश्यक आहे!")
                     }
                     echo "✅ Remote IP: ${params.REMOTE_IP}"
-                    echo "✅ OS Type: ${params.OS_TYPE}"
                 }
             }
         }
@@ -36,25 +35,43 @@ pipeline {
                 script {
                     echo "🔍 Remote machine ची OS detect करत आहे..."
                     
-                    if (params.OS_TYPE == 'linux') {
+                    try {
+                        // Linux check करण्याचा प्रयत्न
                         def osInfo = sh(script: """
-                            sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} 'cat /etc/os-release'
+                            sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${params.REMOTE_USER}@${params.REMOTE_IP} 'uname -s' 2>/dev/null || echo 'FAILED'
                         """, returnStdout: true).trim()
-                        echo "📋 OS Info:\n${osInfo}"
-                    } else {
-                        def osInfo = bat(script: """
-                            @echo off
-                            sshpass -p ${params.REMOTE_PASSWORD} ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "systeminfo | findstr /B /C:\\"OS Name\\""
-                        """, returnStdout: true).trim()
-                        echo "📋 OS Info:\n${osInfo}"
+                        
+                        if (osInfo.contains('Linux')) {
+                            env.DETECTED_OS = 'linux'
+                            echo "✅ Linux OS detected!"
+                            def detailedInfo = sh(script: """
+                                sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} 'cat /etc/os-release'
+                            """, returnStdout: true).trim()
+                            echo "📋 OS Info:\n${detailedInfo}"
+                        } else {
+                            // Windows असणार
+                            env.DETECTED_OS = 'windows'
+                            echo "✅ Windows OS detected!"
+                            def winInfo = bat(script: """
+                                @echo off
+                                sshpass -p ${params.REMOTE_PASSWORD} ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "systeminfo | findstr /B /C:\\"OS Name\\""
+                            """, returnStdout: true).trim()
+                            echo "📋 OS Info:\n${winInfo}"
+                        }
+                    } catch (Exception e) {
+                        // SSH fail झाल्यास Windows समजून WinRM वापरा
+                        env.DETECTED_OS = 'windows'
+                        echo "✅ Windows OS detected (fallback detection)!"
                     }
+                    
+                    echo "🎯 Detected OS: ${env.DETECTED_OS}"
                 }
             }
         }
         
         stage('Linux Setup') {
             when {
-                expression { params.OS_TYPE == 'linux' }
+                expression { env.DETECTED_OS == 'linux' }
             }
             stages {
                 stage('Check Docker on Linux') {
@@ -146,6 +163,74 @@ pipeline {
                     }
                 }
                 
+                stage('Create Docker Compose File on Linux') {
+                    steps {
+                        script {
+                            echo "📝 Docker Compose file तयार करत आहे..."
+                            
+                            sh """
+                                sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} '
+                                    mkdir -p ~/docker-deployment
+                                    cd ~/docker-deployment
+                                    
+                                    cat > docker-compose.yml << EOF
+version: "3.8"
+
+services:
+  postgres:
+    image: localhost:${params.REGISTRY_PORT}/postgres:latest
+    container_name: postgres-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_DB: mydb
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: localhost:${params.REGISTRY_PORT}/redis:latest
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  default:
+    name: app-network
+    driver: bridge
+EOF
+                                    
+                                    echo "✅ docker-compose.yml created!"
+                                    cat docker-compose.yml
+                                '
+                            """
+                        }
+                    }
+                }
+                
                 stage('Pull and Push Images on Linux') {
                     steps {
                         script {
@@ -158,12 +243,12 @@ pipeline {
                                     docker pull ${REDIS_IMAGE}
                                     
                                     # Tag images
-                                    docker tag ${POSTGRES_IMAGE} localhost:${params.REGISTRY_PORT}/postgres:15
-                                    docker tag ${REDIS_IMAGE} localhost:${params.REGISTRY_PORT}/redis:7-alpine
+                                    docker tag ${POSTGRES_IMAGE} localhost:${params.REGISTRY_PORT}/postgres:latest
+                                    docker tag ${REDIS_IMAGE} localhost:${params.REGISTRY_PORT}/redis:latest
                                     
                                     # Push to registry
-                                    docker push localhost:${params.REGISTRY_PORT}/postgres:15
-                                    docker push localhost:${params.REGISTRY_PORT}/redis:7-alpine
+                                    docker push localhost:${params.REGISTRY_PORT}/postgres:latest
+                                    docker push localhost:${params.REGISTRY_PORT}/redis:latest
                                 '
                             """
                             echo "✅ Images successfully push झाल्या!"
@@ -174,33 +259,26 @@ pipeline {
                 stage('Deploy Containers on Linux') {
                     steps {
                         script {
-                            echo "🚀 PostgreSQL आणि Redis containers deploy करत आहे..."
+                            echo "🚀 Docker Compose वापरून containers deploy करत आहे..."
                             
                             sh """
                                 sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} '
-                                    # Stop existing containers
-                                    docker stop postgres-db redis-cache 2>/dev/null || true
-                                    docker rm postgres-db redis-cache 2>/dev/null || true
+                                    cd ~/docker-deployment
                                     
-                                    # Run PostgreSQL
-                                    docker run -d --name postgres-db \
-                                        -e POSTGRES_PASSWORD=postgres123 \
-                                        -e POSTGRES_USER=postgres \
-                                        -e POSTGRES_DB=mydb \
-                                        -p 5432:5432 \
-                                        --restart=always \
-                                        localhost:${params.REGISTRY_PORT}/postgres:15
+                                    # Stop existing containers if running
+                                    docker-compose down 2>/dev/null || true
                                     
-                                    # Run Redis
-                                    docker run -d --name redis-cache \
-                                        -p 6379:6379 \
-                                        --restart=always \
-                                        localhost:${params.REGISTRY_PORT}/redis:7-alpine
+                                    # Start containers with docker-compose
+                                    docker-compose up -d
                                     
-                                    # Wait for containers
-                                    sleep 5
+                                    # Wait for containers to be healthy
+                                    echo "Waiting for containers to be healthy..."
+                                    sleep 10
                                     
-                                    # Verify containers
+                                    # Check container status
+                                    docker-compose ps
+                                    
+                                    # Verify containers are running
                                     docker ps | grep -E "postgres-db|redis-cache"
                                 '
                             """
@@ -213,7 +291,7 @@ pipeline {
         
         stage('Windows Setup') {
             when {
-                expression { params.OS_TYPE == 'windows' }
+                expression { env.DETECTED_OS == 'windows' }
             }
             stages {
                 stage('Configure OpenSSH on Windows') {
@@ -267,6 +345,74 @@ pipeline {
                     }
                 }
                 
+                stage('Create Docker Compose File on Windows') {
+                    steps {
+                        script {
+                            echo "📝 Docker Compose file तयार करत आहे..."
+                            
+                            bat """
+                                sshpass -p ${params.REMOTE_PASSWORD} ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                                    if not exist C:\\docker-deployment mkdir C:\\docker-deployment
+                                    cd C:\\docker-deployment
+                                    
+                                    (
+                                    echo version: '3.8'
+                                    echo.
+                                    echo services:
+                                    echo   postgres:
+                                    echo     image: localhost:${params.REGISTRY_PORT}/postgres:latest
+                                    echo     container_name: postgres-db
+                                    echo     environment:
+                                    echo       POSTGRES_USER: postgres
+                                    echo       POSTGRES_PASSWORD: postgres123
+                                    echo       POSTGRES_DB: mydb
+                                    echo       PGDATA: /var/lib/postgresql/data/pgdata
+                                    echo     ports:
+                                    echo       - '5432:5432'
+                                    echo     volumes:
+                                    echo       - postgres_data:/var/lib/postgresql/data
+                                    echo     restart: always
+                                    echo     healthcheck:
+                                    echo       test: ['CMD-SHELL', 'pg_isready -U postgres']
+                                    echo       interval: 10s
+                                    echo       timeout: 5s
+                                    echo       retries: 5
+                                    echo.
+                                    echo   redis:
+                                    echo     image: localhost:${params.REGISTRY_PORT}/redis:latest
+                                    echo     container_name: redis-cache
+                                    echo     ports:
+                                    echo       - '6379:6379'
+                                    echo     volumes:
+                                    echo       - redis_data:/data
+                                    echo     restart: always
+                                    echo     command: redis-server --appendonly yes
+                                    echo     healthcheck:
+                                    echo       test: ['CMD', 'redis-cli', 'ping']
+                                    echo       interval: 10s
+                                    echo       timeout: 5s
+                                    echo       retries: 5
+                                    echo.
+                                    echo volumes:
+                                    echo   postgres_data:
+                                    echo     driver: local
+                                    echo   redis_data:
+                                    echo     driver: local
+                                    echo.
+                                    echo networks:
+                                    echo   default:
+                                    echo     name: app-network
+                                    echo     driver: bridge
+                                    ^) ^> docker-compose.yml
+                                    
+                                    type docker-compose.yml
+                                "
+                            """
+                            echo "✅ docker-compose.yml created!"
+                        }
+                    }
+                }
+                
                 stage('Setup Docker Registry on Windows') {
                     steps {
                         script {
@@ -296,10 +442,10 @@ pipeline {
                                 sshpass -p ${params.REMOTE_PASSWORD} ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "
                                     docker pull ${POSTGRES_IMAGE} && ^
                                     docker pull ${REDIS_IMAGE} && ^
-                                    docker tag ${POSTGRES_IMAGE} localhost:${params.REGISTRY_PORT}/postgres:15 && ^
-                                    docker tag ${REDIS_IMAGE} localhost:${params.REGISTRY_PORT}/redis:7-alpine && ^
-                                    docker push localhost:${params.REGISTRY_PORT}/postgres:15 && ^
-                                    docker push localhost:${params.REGISTRY_PORT}/redis:7-alpine
+                                    docker tag ${POSTGRES_IMAGE} localhost:${params.REGISTRY_PORT}/postgres:latest && ^
+                                    docker tag ${REDIS_IMAGE} localhost:${params.REGISTRY_PORT}/redis:latest && ^
+                                    docker push localhost:${params.REGISTRY_PORT}/postgres:latest && ^
+                                    docker push localhost:${params.REGISTRY_PORT}/redis:latest
                                 "
                             """
                             echo "✅ Images successfully push झाल्या!"
@@ -310,18 +456,20 @@ pipeline {
                 stage('Deploy Containers on Windows') {
                     steps {
                         script {
-                            echo "🚀 PostgreSQL आणि Redis containers deploy करत आहे..."
+                            echo "🚀 Docker Compose वापरून containers deploy करत आहे..."
                             
                             bat """
                                 sshpass -p ${params.REMOTE_PASSWORD} ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "
-                                    docker stop postgres-db redis-cache 2>nul
-                                    docker rm postgres-db redis-cache 2>nul
+                                    cd C:\\docker-deployment
                                     
-                                    docker run -d --name postgres-db -e POSTGRES_PASSWORD=postgres123 -e POSTGRES_USER=postgres -e POSTGRES_DB=mydb -p 5432:5432 --restart=always localhost:${params.REGISTRY_PORT}/postgres:15
+                                    docker-compose down 2>nul
                                     
-                                    docker run -d --name redis-cache -p 6379:6379 --restart=always localhost:${params.REGISTRY_PORT}/redis:7-alpine
+                                    docker-compose up -d
                                     
-                                    timeout /t 5 /nobreak
+                                    timeout /t 10 /nobreak
+                                    
+                                    docker-compose ps
+                                    
                                     docker ps | findstr postgres-db
                                     docker ps | findstr redis-cache
                                 "
@@ -338,22 +486,42 @@ pipeline {
                 script {
                     echo "✔️ Pipeline verification करत आहे..."
                     
-                    if (params.OS_TYPE == 'linux') {
+                    if (env.DETECTED_OS == 'linux') {
                         sh """
                             sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} '
+                                cd ~/docker-deployment
+                                
+                                echo "=== Docker Compose Services ==="
+                                docker-compose ps
+                                
+                                echo ""
                                 echo "=== Running Containers ==="
                                 docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
                                 
                                 echo ""
                                 echo "=== Docker Registry Images ==="
                                 curl -s http://localhost:${params.REGISTRY_PORT}/v2/_catalog | jq .
+                                
+                                echo ""
+                                echo "=== Health Check ==="
+                                docker exec postgres-db pg_isready -U postgres || echo "PostgreSQL not ready yet"
+                                docker exec redis-cache redis-cli ping || echo "Redis not ready yet"
                             '
                         """
                     } else {
                         bat """
                             sshpass -p ${params.REMOTE_PASSWORD} ssh -o StrictHostKeyChecking=no ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                                cd C:\\docker-deployment
+                                
+                                echo === Docker Compose Services === && ^
+                                docker-compose ps && ^
+                                echo. && ^
                                 echo === Running Containers === && ^
-                                docker ps --format \"table {{.Names}}\\t{{.Status}}\\t{{.Ports}}\"
+                                docker ps --format \"table {{.Names}}\\t{{.Status}}\\t{{.Ports}}\" && ^
+                                echo. && ^
+                                echo === Health Check === && ^
+                                docker exec postgres-db pg_isready -U postgres && ^
+                                docker exec redis-cache redis-cli ping
                             "
                         """
                     }
@@ -370,14 +538,15 @@ pipeline {
                 ║   🎉 Pipeline Successfully Completed! 🎉      ║
                 ╠════════════════════════════════════════════════╣
                 ║ Remote IP: ${params.REMOTE_IP}
-                ║ OS Type: ${params.OS_TYPE.toUpperCase()}
+                ║ OS Type: ${env.DETECTED_OS.toUpperCase()}
                 ║ 
                 ║ ✅ Docker & Docker Compose: Installed
+                ║ ✅ Docker Compose File: Created
                 ║ ✅ Private Registry: Running on port ${params.REGISTRY_PORT}
                 ║ ✅ PostgreSQL: Running on port 5432
                 ║ ✅ Redis: Running on port 6379
-                ${params.OS_TYPE == 'windows' ? '║ ✅ OpenSSH: Configured (Port 22)' : ''}
-                ${params.OS_TYPE == 'windows' ? '║ ✅ Firewall: Enabled for SSH' : ''}
+                ${env.DETECTED_OS == 'windows' ? '║ ✅ OpenSSH: Configured (Port 22)' : ''}
+                ${env.DETECTED_OS == 'windows' ? '║ ✅ Firewall: Enabled for SSH' : ''}
                 ║ 
                 ║ 📋 Container Status:
                 ║    - postgres-db: ✅ Running
