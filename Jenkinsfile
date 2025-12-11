@@ -8,7 +8,7 @@ pipeline {
     }
 
     environment {
-        REGISTRY = "my-registry.example.com:5000"
+        REGISTRY = "192.168.1.8:5000"
         COMPOSE_FILE = "docker-compose.yml"
     }
 
