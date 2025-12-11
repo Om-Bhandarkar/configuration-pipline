@@ -19,7 +19,7 @@ pipeline {
       steps {
         script {
           if (!params.TARGET_IP?.trim()) {
-            error "TARGET_IP आवश्यक आहे — Jenkins job parameter मध्ये द्या."
+            error "TARGET_IP आवश्यक आहे."
           }
         }
       }
@@ -35,18 +35,18 @@ pipeline {
             fi
           """
           env.SSH_PUB = sh(returnStdout:true, script: "cat ${env.WORKSPACE}/.ssh/id_rsa.pub").trim()
-          echo "Jenkins SSH Public Key Ready."
+          echo "✔ Jenkins SSH Public Key Ready."
         }
       }
     }
 
-    stage('Ping target') {
+    stage('Ping Target') {
       steps {
         script {
           if (sh(returnStatus: true, script: "ping -c 2 ${params.TARGET_IP}") != 0) {
-            error "Target ${params.TARGET_IP} not reachable."
+            error "❌ Target not reachable."
           }
-          echo "Target reachable."
+          echo "✔ Ping successful."
         }
       }
     }
@@ -61,14 +61,14 @@ pipeline {
           """)
 
           if (ok == 0) {
-            echo "Passwordless SSH works. Skipping bootstrap."
+            echo "✔ Passwordless SSH already works. Skipping bootstrap."
             env.NEED_BOOTSTRAP = "false"
 
-            def linuxTest = sh(returnStatus: true, script: """
+            def isLinux = sh(returnStatus: true, script: """
               ssh -o StrictHostKeyChecking=no ${params.TARGET_IP} "uname -s"
             """)
 
-            env.DETECTED_OS = (linuxTest == 0) ? "LINUX" : "WINDOWS"
+            env.DETECTED_OS = (isLinux == 0) ? "LINUX" : "WINDOWS"
           }
         }
       }
@@ -78,37 +78,31 @@ pipeline {
       when { expression { env.NEED_BOOTSTRAP == "true" } }
       steps {
         script {
+          def USER = params.TARGET_USER
+          def PASS = params.TARGET_PASSWORD
 
-          def TUSER = params.TARGET_USER
-          def TPASS = params.TARGET_PASSWORD
-
-          // Check password SSH
+          // Check SSH password login
           def canSSH = sh(returnStatus: true, script: """
-            sshpass -p "$TPASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 ${TUSER}@${params.TARGET_IP} "echo OK"
+            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 ${USER}@${params.TARGET_IP} "echo OK"
           """)
 
-          if (canSSH != 0) {
-            error "Password-based SSH failed."
-          }
+          if (canSSH != 0) error "❌ Password SSH failed."
 
-          // FIXED OS DETECTION LOGIC
-          def output = sh(returnStdout:true, script: """
-            sshpass -p "$TPASS" ssh -o StrictHostKeyChecking=no ${TUSER}@${params.TARGET_IP} "uname -s" || echo WINDOWS
+          // Detect OS
+          def osCheck = sh(returnStdout:true, script: """
+            sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "uname -s" 2>/dev/null
           """).trim()
 
-          if (output.toLowerCase().contains("linux")) {
-            env.DETECTED_OS = "LINUX"
-          } else {
-            env.DETECTED_OS = "WINDOWS"
-          }
+          env.DETECTED_OS = osCheck.toLowerCase().contains("linux") ? "LINUX" : "WINDOWS"
+          echo "✔ Detected OS = ${env.DETECTED_OS}"
 
-          echo "Detected OS: ${env.DETECTED_OS}"
-
+          // -----------------------------
           // LINUX SETUP
+          // -----------------------------
           if (env.DETECTED_OS == "LINUX") {
 
             sh """
-              sshpass -p "$TPASS" ssh -o StrictHostKeyChecking=no ${TUSER}@${params.TARGET_IP} '
+              sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} '
                 sudo apt-get update -y || sudo yum -y makecache fast;
                 sudo apt-get install -y openssh-server ufw || sudo yum install -y openssh-server;
                 sudo systemctl enable --now ssh || sudo systemctl enable --now sshd;
@@ -120,34 +114,61 @@ pipeline {
               '
             """
 
-            echo "Linux bootstrap complete."
+            echo "✔ Linux bootstrap completed."
           }
 
-          // WINDOWS SETUP
+          // -----------------------------
+          // WINDOWS SETUP — FULL AUTO INSTALL
+          // -----------------------------
           else {
 
-            def ps = sh(returnStatus: true, script: """
-              sshpass -p "$TPASS" ssh -o StrictHostKeyChecking=no ${TUSER}@${params.TARGET_IP} powershell.exe -Command "Write-Output OK"
-            """)
+            echo "✔ Windows detected — Auto-installing OpenSSH..."
 
-            if (ps != 0) {
-              error "Windows OpenSSH is not installed. Install it manually once."
-            }
-
-            // FIX: USED env.SSH_PUB instead of SSH_PUB
+            // Install OpenSSH Server if missing
             sh """
-              sshpass -p "$TPASS" ssh -o StrictHostKeyChecking=no ${TUSER}@${params.TARGET_IP} '
-                powershell -Command "
-                  \$d = Join-Path \$env:USERPROFILE '.ssh';
-                  if (!(Test-Path \$d)) { New-Item -ItemType Directory -Path \$d };
-                  Add-Content -Path (Join-Path \$d 'authorized_keys') -Value '${env.SSH_PUB}';
-                "
-              '
+              sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
+                powershell.exe -Command \\\"
+                  if (-not (Get-WindowsCapability -Online | Where-Object { \$_.Name -like 'OpenSSH.Server*' -and \$_.State -eq 'Installed' })) {
+                      Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0;
+                  }
+                \\\"
+              "
             """
 
-            echo "Windows key setup complete."
-          }
+            // Enable & Start SSHD
+            sh """
+              sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
+                powershell.exe -Command \\\"
+                  Set-Service -Name sshd -StartupType Automatic;
+                  Start-Service sshd;
+                \\\"
+              "
+            """
 
+            // Firewall allow port 22
+            sh """
+              sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
+                powershell.exe -Command \\\"
+                  if (!(Get-NetFirewallRule -DisplayName 'OpenSSH Port 22' -ErrorAction SilentlyContinue)) {
+                      New-NetFirewallRule -DisplayName 'OpenSSH Port 22' -Direction Inbound -LocalPort 22 -Protocol TCP -Action Allow;
+                  }
+                \\\"
+              "
+            """
+
+            // Add SSH Public Key
+            sh """
+              sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "
+                powershell.exe -Command \\\"
+                  \$d = Join-Path \$env:USERPROFILE '.ssh';
+                  if (!(Test-Path \$d)) { New-Item -ItemType Directory -Path \$d -Force };
+                  Add-Content -Path (Join-Path \$d 'authorized_keys') -Value '${env.SSH_PUB}';
+                \\\"
+              "
+            """
+
+            echo "✔ Windows OpenSSH auto-install + key setup complete."
+          }
         }
       }
     }
@@ -155,28 +176,24 @@ pipeline {
     stage('Verify Passwordless SSH') {
       steps {
         script {
-
           def ok = sh(returnStatus: true, script: """
             ssh -o BatchMode=yes -o StrictHostKeyChecking=no ${params.TARGET_IP} "echo OK"
           """)
 
-          if (ok != 0) {
-            error "Passwordless SSH still NOT working!"
-          }
+          if (ok != 0) error "❌ Passwordless SSH still NOT working!"
 
-          echo "Passwordless SSH Verified ✔"
+          echo "✔ Passwordless SSH Verified!"
         }
       }
     }
-
   }
 
   post {
     success {
-      echo "Pipeline Completed Successfully ✔ DETECTED_OS=${env.DETECTED_OS}"
+      echo "🎉 Pipeline Finished Successfully! OS = ${env.DETECTED_OS}"
     }
     failure {
-      echo "Pipeline Failed ❌ — Please check logs."
+      echo "❌ Pipeline Failed — Check logs."
     }
   }
 }
