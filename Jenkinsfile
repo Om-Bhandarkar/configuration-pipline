@@ -37,39 +37,53 @@ pipeline {
                 script {
                     echo "🔍 Remote machine OS detect करत आहे..."
 
-                    detectedOS = "unknown"
+                    // Jenkins needs explicit def
+                    def detected = "unknown"
 
-                    // Linux check
+                    /* ---------- Linux Detection ---------- */
                     try {
                         def osInfo = sh(
-                            script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${params.REMOTE_USER}@${params.REMOTE_IP} 'uname -s'""",
+                            script: """
+                                sshpass -p '${params.REMOTE_PASSWORD}' \
+                                ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+                                ${params.REMOTE_USER}@${params.REMOTE_IP} "uname -s"
+                            """,
                             returnStdout: true
                         ).trim()
 
                         if (osInfo.contains("Linux")) {
-                            detectedOS = "linux"
+                            detected = "linux"
                             echo "🐧 Linux detected!"
                         }
-                    } catch(e) {}
+                    } catch (err) {
+                        // ignore
+                    }
 
-                    // Windows check
-                    if (detectedOS == "unknown") {
+                    /* ---------- Windows Detection ---------- */
+                    if (detected == "unknown") {
                         try {
                             def winInfo = sh(
-                                script: """sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\"" """,
+                                script: """
+                                    sshpass -p '${params.REMOTE_PASSWORD}' \
+                                    ssh -o StrictHostKeyChecking=no \
+                                    ${params.REMOTE_USER}@${params.REMOTE_IP} \
+                                    "powershell -Command \\"(Get-WmiObject Win32_OperatingSystem).Caption\\""
+                                """,
                                 returnStdout: true
                             ).trim()
 
                             if (winInfo) {
-                                detectedOS = "windows"
+                                detected = "windows"
                                 echo "🪟 Windows detected!"
                             }
-                        } catch(e) {
-                            detectedOS = "windows"
+                        } catch (err) {
+                            detected = "windows"
                         }
                     }
 
-                    echo "🎯 Final detected OS: ${detectedOS}"
+                    echo "🎯 Final detected OS: ${detected}"
+                    // Store in global env
+                    env.detectedOS = detected
                 }
             }
         }
@@ -78,32 +92,36 @@ pipeline {
         /* ============================= LINUX SETUP ============================= */
 
         stage('Transfer Compose (Linux)') {
-            when { expression { detectedOS == 'linux' } }
+            when { expression { env.detectedOS == 'linux' } }
             steps {
                 script {
                     echo "📤 Linux: docker-compose.yml transfer करत आहे..."
 
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
-                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:~/docker-deployment/docker-compose.yml
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        ssh ${params.REMOTE_USER}@${params.REMOTE_IP} 'mkdir -p ~/docker-deployment'
+
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:~/docker-deployment/docker-compose.yml
                     """
                 }
             }
         }
 
         stage('Run Compose (Linux)') {
-            when { expression { detectedOS == 'linux' } }
+            when { expression { env.detectedOS == 'linux' } }
             steps {
                 script {
                     echo "🚀 Linux remote machine वर containers deploy करत आहे..."
 
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
                             cd ~/docker-deployment
                             docker-compose down || true
                             docker-compose up -d
                             docker ps -a
-                        "
+                        '
                     """
                 }
             }
@@ -114,27 +132,31 @@ pipeline {
         /* ============================= WINDOWS SETUP ============================= */
 
         stage('Transfer Compose (Windows)') {
-            when { expression { detectedOS == 'windows' } }
+            when { expression { env.detectedOS == 'windows' } }
             steps {
                 script {
                     echo "📤 Windows: docker-compose.yml transfer करत आहे..."
 
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\docker-deployment 2>nul"
-                        sshpass -p '${params.REMOTE_PASSWORD}' scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "mkdir C:\\docker-deployment 2>nul"
+
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        scp docker-compose.yml ${params.REMOTE_USER}@${params.REMOTE_IP}:C:/docker-deployment/docker-compose.yml
                     """
                 }
             }
         }
 
         stage('Run Compose (Windows)') {
-            when { expression { detectedOS == 'windows' } }
+            when { expression { env.detectedOS == 'windows' } }
             steps {
                 script {
                     echo "🚀 Windows remote machine वर containers deploy करत आहे..."
 
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        ssh ${params.REMOTE_USER}@${params.REMOTE_IP} "
                             cd C:\\docker-deployment
                             docker-compose down || echo no-old-containers
                             docker-compose up -d
@@ -154,7 +176,8 @@ pipeline {
                     echo "✔️ Remote machine वर containers verify करत आहे..."
 
                     sh """
-                        sshpass -p '${params.REMOTE_PASSWORD}' ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
+                        sshpass -p '${params.REMOTE_PASSWORD}' \
+                        ssh ${params.REMOTE_USER}@${params.REMOTE_IP} '
                             echo "==== Docker Status ===="
                             docker ps -a
                         '
