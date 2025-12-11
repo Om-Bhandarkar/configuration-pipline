@@ -8,11 +8,10 @@ pipeline {
         string(name: 'REGISTRY_PORT', defaultValue: '5000', description: 'Docker registry port')
     }
     
-    environment {
-        DETECTED_OS = ''
-    }
+   
     
     environment {
+        DETECTED_OS = ''
         REGISTRY_NAME = "local-registry"
         POSTGRES_IMAGE = "postgres:15"
         REDIS_IMAGE = "redis:7-alpine"
