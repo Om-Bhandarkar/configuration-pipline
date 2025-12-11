@@ -63,7 +63,7 @@ pipeline {
                         fi
 
                         if ! command -v docker-compose >/dev/null; then
-                            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\\$(uname -s)-\\$(uname -m)" \
+                            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" \
                             -o /usr/local/bin/docker-compose &&
                             sudo chmod +x /usr/local/bin/docker-compose
                         fi
@@ -127,7 +127,7 @@ pipeline {
                     echo "🗄️ Starting registry first..."
 
                     shOrBatRemote("""
-                        cd ~/docker-deployment
+                        cd ~/docker-deployment || cd C:/docker-deployment
                         docker-compose up -d registry
                     """)
 
@@ -165,7 +165,7 @@ pipeline {
                         docker push localhost:${params.REGISTRY_PORT}/redis:latest
                     """)
 
-                    echo "✅ Images available in private registry!"
+                    echo "✅ Images pushed!"
                 }
             }
         }
@@ -179,22 +179,22 @@ pipeline {
                     echo "🚀 Starting PostgreSQL + Redis..."
 
                     shOrBatRemote("""
-                        cd ~/docker-deployment
+                        cd ~/docker-deployment || cd C:/docker-deployment
                         docker-compose up -d postgres redis
                     """)
 
                     echo "⏳ Checking PostgreSQL health..."
-
                     retry(10) {
-                        shOrBatRemote("docker exec infra-postgres pg_isready -U postgres || exit 1")
-                        sleep 2
+                        shOrBatRemote("""
+                            docker exec infra-postgres pg_isready -U postgres || exit 1
+                        """)
                     }
 
                     echo "⏳ Checking Redis health..."
-
                     retry(10) {
-                        shOrBatRemote("docker exec infra-redis redis-cli ping | grep PONG || exit 1")
-                        sleep 2
+                        shOrBatRemote("""
+                            docker exec infra-redis redis-cli ping | grep PONG || exit 1
+                        """)
                     }
 
                     echo "✅ All services healthy!"
@@ -222,7 +222,7 @@ All health checks passed ✔✔✔
 }
 
 /* -------------------------------------------------------
-   UTIL FUNCTIONS (CLEAN & OPTIMIZED)
+   UTIL FUNCTIONS
 --------------------------------------------------------*/
 
 def shOrBatRemote(cmd) {
