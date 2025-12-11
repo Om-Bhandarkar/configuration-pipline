@@ -58,17 +58,24 @@ pipeline {
         script {
           def USER = params.TARGET_USER
           def PASS = params.TARGET_PASSWORD
-
-          def os = sh(returnStdout:true, script: """
+    
+          def out = sh(returnStdout:true, script: """
             sshpass -p '${PASS}' ssh -o StrictHostKeyChecking=no ${USER}@${params.TARGET_IP} "uname -s" 2>/dev/null || echo WINDOWS
-          """).trim()
-
-          env.DETECTED_OS = os.toLowerCase().contains("linux") ? "LINUX" : "WINDOWS"
-
-          echo "✔ Detected OS: ${env.DETECTED_OS}"
+          """).trim().toLowerCase()
+    
+          if (out.contains("linux")) {
+            env.DETECTED_OS = "LINUX"
+          } else if (out.contains("windows")) {
+            env.DETECTED_OS = "WINDOWS"
+          } else {
+            env.DETECTED_OS = "UNKNOWN"
+          }
+    
+          echo "✔ Detected OS = ${env.DETECTED_OS}"
         }
       }
     }
+
 
     stage('Windows: Install OpenSSH If Missing') {
       when { expression { env.DETECTED_OS == "WINDOWS" } }
