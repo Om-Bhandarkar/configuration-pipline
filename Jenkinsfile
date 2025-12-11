@@ -14,17 +14,23 @@ pipeline {
 
     stages {
 
+        /* -----------------------------
+         * Stage 1: Validate Inputs
+         * ----------------------------- */
         stage('Validate Inputs') {
             steps {
                 script {
-                    if (!params.REMOTE_IP?.trim()) error "REMOTE_IP required"
-                    if (!params.SSH_USER?.trim()) error "SSH_USER required"
-                    if (!params.SSH_PASS) error "SSH_PASS required"   // FIXED
+                    if (!params.REMOTE_IP?.trim())  error "REMOTE_IP required"
+                    if (!params.SSH_USER?.trim())   error "SSH_USER required"
+                    if (!params.SSH_PASS)           error "SSH_PASS required"
                     if (!fileExists(env.COMPOSE_FILE)) error "docker-compose.yml not found"
                 }
             }
         }
 
+        /* -----------------------------
+         * Stage 2: Find Images from Compose
+         * ----------------------------- */
         stage('Find Images from Compose') {
             steps {
                 script {
@@ -41,15 +47,24 @@ pipeline {
             }
         }
 
+        /* -----------------------------
+         * Stage 3: Tag & Push Images (FIXED)
+         * ----------------------------- */
         stage('Tag & Push Images') {
             steps {
                 script {
                     def images = readFile('images.list').readLines()
 
                     for (img in images) {
-                        def name = img.contains('/') ? img.substring(img.indexOf('/')+1) : img
-                        def tag = img.contains(":") ? img.split(':')[-1] : "latest"
+
+                        // Split image:tag → redis + latest
+                        def parts = img.split(":")
+                        def name = parts[0]
+                        def tag = parts.size() > 1 ? parts[1] : "latest"
+
                         def target = "${env.REGISTRY}/${name}:${tag}"
+
+                        echo "Tagging & pushing → ${img} → ${target}"
 
                         sh """
                             docker pull ${img} || true
@@ -61,6 +76,9 @@ pipeline {
             }
         }
 
+        /* -----------------------------
+         * Stage 4: Create Remote Script
+         * ----------------------------- */
         stage('Generate Remote Script') {
             steps {
                 script {
@@ -69,7 +87,6 @@ pipeline {
                     set -e
 
                     REGISTRY="${env.REGISTRY}"
-                    COMPOSE="${env.COMPOSE_FILE}"
 
                     echo "Installing Docker if missing..."
                     if ! command -v docker >/dev/null; then
@@ -89,13 +106,11 @@ pipeline {
                     fi
 
                     mkdir -p /opt/jenkins_app
+                    cp /tmp/docker-compose.yml /opt/jenkins_app/docker-compose.yml
+
                     cd /opt/jenkins_app
-
-                    echo "Pulling images..."
-                    docker-compose -f ${env.COMPOSE_FILE} pull || true
-
-                    echo "Starting containers..."
-                    docker-compose -f ${env.COMPOSE_FILE} up -d --remove-orphans
+                    docker-compose pull || true
+                    docker-compose up -d --remove-orphans
 
                     echo "Running containers:"
                     docker ps
@@ -107,17 +122,23 @@ pipeline {
             }
         }
 
+        /* -----------------------------
+         * Stage 5: Copy Files to Remote
+         * ----------------------------- */
         stage('Copy Files to Remote') {
             steps {
                 script {
                     sh """
-                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no ${env.COMPOSE_FILE} ${params.SSH_USER}@${params.REMOTE_IP}:/opt/jenkins_app/
-                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no remote.sh ${params.SSH_USER}@${params.REMOTE_IP}:/tmp/
+                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no ${env.COMPOSE_FILE} ${params.SSH_USER}@${params.REMOTE_IP}:/tmp/docker-compose.yml
+                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no remote.sh ${params.SSH_USER}@${params.REMOTE_IP}:/tmp/remote.sh
                     """
                 }
             }
         }
 
+        /* -----------------------------
+         * Stage 6: Execute Remote Script
+         * ----------------------------- */
         stage('Execute Remote Script') {
             steps {
                 script {
@@ -128,6 +149,9 @@ pipeline {
             }
         }
 
+        /* -----------------------------
+         * Stage 7: Verify Containers
+         * ----------------------------- */
         stage('Verify Containers') {
             steps {
                 script {
