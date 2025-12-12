@@ -55,20 +55,22 @@ pipeline {
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                    # Install Docker if not present
                     if ! command -v docker >/dev/null 2>&1; then
                         echo "Installing Docker..."
                         curl -fsSL https://get.docker.com | sudo sh
                     fi
 
+                    # Install Docker Compose if not present
                     if ! command -v docker-compose >/dev/null 2>&1; then
                         echo "Installing docker-compose..."
-                        sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
+                        sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\$(uname -s)-\$(uname -m)" \
                         -o /usr/local/bin/docker-compose
                         sudo chmod +x /usr/local/bin/docker-compose
                     fi
                 '
                 """
-                echo "Docker & docker-compose installed for Linux."
+                echo "Docker & docker-compose installed on Linux."
             }
         }
 
@@ -123,9 +125,7 @@ pipeline {
         stage('Verify Running Containers') {
             steps {
                 script {
-                    def cmd = (env.REMOTE_OS == "WINDOWS") ?
-                        "docker ps --format \\\"CONTAINER: {{.Names}} IMAGE: {{.Image}} STATUS: {{.Status}}\\\"" :
-                        "docker ps --format \\\"CONTAINER: {{.Names}} IMAGE: {{.Image}} STATUS: {{.Status}}\\\""
+                    def cmd = "docker ps --format \\\"CONTAINER: {{.Names}} IMAGE: {{.Image}} STATUS: {{.Status}}\\\""
 
                     def output = sh(
                         script: """
