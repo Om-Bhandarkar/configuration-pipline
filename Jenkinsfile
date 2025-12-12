@@ -2,170 +2,136 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'REMOTE_IP', defaultValue: '', description: 'Remote machine IP address')
-        string(name: 'SSH_USER', defaultValue: '', description: 'SSH username')
-        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH password')
-    }
-
-    environment {
-        REGISTRY = "192.168.1.8:5000"
-        COMPOSE_FILE = "docker-compose.yml"
+        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote machine IP')
+        string(name: 'SSH_USER', defaultValue: 'ubuntu', description: 'SSH Username')
+        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
+        string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file to deploy')
     }
 
     stages {
 
-        /* -----------------------------
-         * Stage 1: Validate Inputs
-         * ----------------------------- */
         stage('Validate Inputs') {
             steps {
                 script {
-                    if (!params.REMOTE_IP?.trim())  error "REMOTE_IP required"
-                    if (!params.SSH_USER?.trim())   error "SSH_USER required"
-                    if (!params.SSH_PASS)           error "SSH_PASS required"
-                    if (!fileExists(env.COMPOSE_FILE)) error "docker-compose.yml not found"
+                    if (!params.TARGET_IP) error "IP address is required"
+                    if (!params.SSH_USER) error "Username is required"
+                    if (!params.SSH_PASS) error "Password is required"
+                    if (!fileExists(params.COMPOSE_FILE)) error "Compose file not found in workspace"
                 }
             }
         }
 
-        /* -----------------------------
-         * Stage 2: Find Images from Compose
-         * ----------------------------- */
-        stage('Find Images from Compose') {
+        stage('SSH Connectivity Check') {
+            steps {
+                sh """
+                which sshpass >/dev/null 2>&1 || (echo 'ERROR: sshpass not installed on Jenkins agent!' && exit 2)
+
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                    ${params.SSH_USER}@${params.TARGET_IP} 'echo SSH_OK'
+                """
+                echo "SSH connection successful."
+            }
+        }
+
+        stage('Detect Remote OS') {
             steps {
                 script {
-                    def images = sh(
-                        script: "grep -E 'image:' ${env.COMPOSE_FILE} | awk '{print \$2}'",
+                    def os = sh(
+                        script: """
+                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                        ${params.SSH_USER}@${params.TARGET_IP} 'uname -s' 2>/dev/null || echo WINDOWS
+                        """,
                         returnStdout: true
-                    ).trim().readLines()
+                    ).trim()
 
-                    if (images.isEmpty()) error "No images found in compose"
+                    if (os.contains("Linux")) {
+                        env.REMOTE_OS = "LINUX"
+                    } else {
+                        env.REMOTE_OS = "WINDOWS"
+                    }
 
-                    writeFile file: 'images.list', text: images.join("\n")
-                    echo "Images:\n" + images.join("\n")
+                    echo "Remote OS detected: ${env.REMOTE_OS}"
                 }
             }
         }
 
-        /* -----------------------------
-         * Stage 3: Tag & Push Images (FIXED)
-         * ----------------------------- */
-        stage('Tag & Push Images') {
+        stage('Install Docker & Compose (Linux only)') {
+            when { expression { env.REMOTE_OS == "LINUX" } }
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                  
+                  if ! command -v docker >/dev/null 2>&1; then
+                    echo "Installing Docker..."
+                    curl -fsSL https://get.docker.com | sudo sh
+                  fi
+
+                  if ! command -v docker-compose >/dev/null 2>&1; then
+                    echo "Installing docker-compose..."
+                    sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\$(uname -s)-\\$(uname -m)" \
+                    -o /usr/local/bin/docker-compose
+                    sudo chmod +x /usr/local/bin/docker-compose
+                  fi
+                '
+                """
+                echo "Docker & docker-compose verified/installed on Linux host."
+            }
+        }
+
+        stage('Copy docker-compose.yml to Remote') {
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
+                    ${params.COMPOSE_FILE} ${params.SSH_USER}@${params.TARGET_IP}:~/docker-compose.yml
+                """
+                echo "Compose file copied to remote machine."
+            }
+        }
+
+        stage('Start Containers Using docker-compose') {
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                    cd ~
+                    docker-compose pull || true
+                    docker-compose up -d --remove-orphans
+                '
+                """
+                echo "docker-compose up executed on remote machine."
+            }
+        }
+
+        stage('Verify Running Containers') {
             steps {
                 script {
-                    def images = readFile('images.list').readLines()
+                    def output = sh(
+                        script: """
+                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                        ${params.SSH_USER}@${params.TARGET_IP} '
+                            docker ps --format "CONTAINER: {{.Names}}, IMAGE: {{.Image}}, STATUS: {{.Status}}"
+                        '
+                        """,
+                        returnStdout: true
+                    ).trim()
 
-                    for (img in images) {
+                    echo "Remote docker ps output:\n${output}"
 
-                        // Split image:tag → redis + latest
-                        def parts = img.split(":")
-                        def name = parts[0]
-                        def tag = parts.size() > 1 ? parts[1] : "latest"
-
-                        def target = "${env.REGISTRY}/${name}:${tag}"
-
-                        echo "Tagging & pushing → ${img} → ${target}"
-
-                        sh """
-                            docker pull ${img} || true
-                            docker tag ${img} ${target}
-                            docker push ${target}
-                        """
+                    if (!output) {
+                        error("ERROR: No containers are running after deployment!")
                     }
                 }
             }
         }
-
-        /* -----------------------------
-         * Stage 4: Create Remote Script
-         * ----------------------------- */
-        stage('Generate Remote Script') {
-            steps {
-                script {
-                    def scriptText = """
-                    #!/bin/bash
-                    set -e
-
-                    REGISTRY="${env.REGISTRY}"
-
-                    echo "Installing Docker if missing..."
-                    if ! command -v docker >/dev/null; then
-                        if [ -f /etc/debian_version ]; then
-                            apt update -y
-                            apt install -y docker.io
-                        elif [ -f /etc/redhat-release ]; then
-                            yum install -y docker
-                        fi
-                        systemctl enable --now docker
-                    fi
-
-                    echo "Installing docker-compose if missing..."
-                    if ! command -v docker-compose >/dev/null; then
-                        curl -L https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m) -o /usr/local/bin/docker-compose
-                        chmod +x /usr/local/bin/docker-compose
-                    fi
-
-                    mkdir -p /opt/jenkins_app
-                    cp /tmp/docker-compose.yml /opt/jenkins_app/docker-compose.yml
-
-                    cd /opt/jenkins_app
-                    docker-compose pull || true
-                    docker-compose up -d --remove-orphans
-
-                    echo "Running containers:"
-                    docker ps
-                    """
-
-                    writeFile file: "remote.sh", text: scriptText
-                    sh "chmod +x remote.sh"
-                }
-            }
-        }
-
-        /* -----------------------------
-         * Stage 5: Copy Files to Remote
-         * ----------------------------- */
-        stage('Copy Files to Remote') {
-            steps {
-                script {
-                    sh """
-                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no ${env.COMPOSE_FILE} ${params.SSH_USER}@${params.REMOTE_IP}:/tmp/docker-compose.yml
-                        sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no remote.sh ${params.SSH_USER}@${params.REMOTE_IP}:/tmp/remote.sh
-                    """
-                }
-            }
-        }
-
-        /* -----------------------------
-         * Stage 6: Execute Remote Script
-         * ----------------------------- */
-        stage('Execute Remote Script') {
-            steps {
-                script {
-                    sh """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.REMOTE_IP} "sudo bash /tmp/remote.sh"
-                    """
-                }
-            }
-        }
-
-        /* -----------------------------
-         * Stage 7: Verify Containers
-         * ----------------------------- */
-        stage('Verify Containers') {
-            steps {
-                script {
-                    sh """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.REMOTE_IP} "docker ps"
-                    """
-                }
-            }
-        }
-
     }
 
     post {
-        success { echo "Pipeline Successful!" }
-        failure { echo "Pipeline Failed!" }
+        success {
+            echo "Deployment successful! Containers are running on ${params.TARGET_IP}"
+        }
+        failure {
+            echo "Deployment failed. Check logs above."
+        }
     }
 }
