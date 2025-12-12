@@ -98,7 +98,7 @@ pipeline {
                 ${params.SSH_USER}@${params.TARGET_IP} powershell -Command "
                     cd C:/Users/${params.SSH_USER};
                     if (!(docker compose)) { Write-Host 'Docker Desktop not installed!'; exit 1 }
-                    docker compose up -d;
+                    docker compose up -d
                 "
                 """
                 echo "Windows deployment done using 'docker compose'"
@@ -113,7 +113,7 @@ pipeline {
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
                     cd ~;
-                    docker-compose up -d --remove-orphans;
+                    docker-compose up -d --remove-orphans
                 '
                 """
                 echo "Linux deployment done using docker-compose"
