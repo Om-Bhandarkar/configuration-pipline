@@ -3,7 +3,7 @@ pipeline {
 
     parameters {
         string(name: 'TARGET_IP', defaultValue: '', description: 'Remote machine IP')
-        string(name: 'SSH_USER', defaultValue: 'ubuntu', description: 'SSH Username')
+        string(name: 'SSH_USER', defaultValue: 'Administrator', description: 'SSH Username')
         password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file to deploy')
     }
@@ -44,12 +44,7 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    if (os.contains("Linux")) {
-                        env.REMOTE_OS = "LINUX"
-                    } else {
-                        env.REMOTE_OS = "WINDOWS"
-                    }
-
+                    env.REMOTE_OS = os.contains("Linux") ? "LINUX" : "WINDOWS"
                     echo "Remote OS detected: ${env.REMOTE_OS}"
                 }
             }
@@ -59,68 +54,91 @@ pipeline {
             when { expression { env.REMOTE_OS == "LINUX" } }
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} '
-                  
-                  if ! command -v docker >/dev/null 2>&1; then
-                    echo "Installing Docker..."
-                    curl -fsSL https://get.docker.com | sudo sh
-                  fi
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
+                    if ! command -v docker >/dev/null 2>&1; then
+                        echo "Installing Docker..."
+                        curl -fsSL https://get.docker.com | sudo sh
+                    fi
 
-                  if ! command -v docker-compose >/dev/null 2>&1; then
-                    echo "Installing docker-compose..."
-                    sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
-                    -o /usr/local/bin/docker-compose
-                    sudo chmod +x /usr/local/bin/docker-compose
-                  fi
+                    if ! command -v docker-compose >/dev/null 2>&1; then
+                        echo "Installing docker-compose..."
+                        sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\\\$(uname -s)-\\\$(uname -m)" \
+                        -o /usr/local/bin/docker-compose
+                        sudo chmod +x /usr/local/bin/docker-compose
+                    fi
                 '
                 """
-                echo "Docker & docker-compose verified/installed on Linux host."
+                echo "Docker & docker-compose installed for Linux."
             }
         }
 
         stage('Copy docker-compose.yml to Remote') {
             steps {
-                sh """
-                sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
-                    ${params.COMPOSE_FILE} ${params.SSH_USER}@${params.TARGET_IP}:~/docker-compose.yml
-                """
-                echo "Compose file copied to remote machine."
+                script {
+                    def remotePath = (env.REMOTE_OS == "WINDOWS") ?
+                        "/Users/${params.SSH_USER}/docker-compose.yml" :
+                        "~/docker-compose.yml"
+
+                    sh """
+                    sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
+                        ${params.COMPOSE_FILE} ${params.SSH_USER}@${params.TARGET_IP}:${remotePath}
+                    """
+
+                    echo "Compose file copied to: ${remotePath}"
+                }
             }
         }
 
-        stage('Start Containers Using docker-compose') {
+        /* ---------------------- WINDOWS FLOW ------------------------ */
+        stage('Start Containers (Windows)') {
+            when { expression { env.REMOTE_OS == "WINDOWS" } }
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} powershell -Command "
+                    cd C:/Users/${params.SSH_USER};
+                    if (!(docker compose)) { Write-Host 'Docker Desktop not installed!'; exit 1 }
+                    docker compose pull;
+                    docker compose up -d;
+                "
+                """
+                echo "Windows deployment done using 'docker compose'"
+            }
+        }
+
+        /* ---------------------- LINUX FLOW ------------------------ */
+        stage('Start Containers (Linux)') {
+            when { expression { env.REMOTE_OS == "LINUX" } }
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
-                    cd ~
-                    docker-compose pull || true
-                    docker-compose up -d --remove-orphans
+                    cd ~;
+                    docker-compose pull || true;
+                    docker-compose up -d --remove-orphans;
                 '
                 """
-                echo "docker-compose up executed on remote machine."
+                echo "Linux deployment done using docker-compose"
             }
         }
 
         stage('Verify Running Containers') {
             steps {
                 script {
+                    def cmd = (env.REMOTE_OS == "WINDOWS") ?
+                        "docker ps --format \\\"CONTAINER: {{.Names}} IMAGE: {{.Image}} STATUS: {{.Status}}\\\"" :
+                        "docker ps --format \\\"CONTAINER: {{.Names}} IMAGE: {{.Image}} STATUS: {{.Status}}\\\""
+
                     def output = sh(
                         script: """
                         sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} '
-                            docker ps --format "CONTAINER: {{\\\$ .Names}}, IMAGE: {{\\\$ .Image}}, STATUS: {{\\\$ .Status}}"
-                        '
+                        ${params.SSH_USER}@${params.TARGET_IP} "${cmd}"
                         """,
                         returnStdout: true
                     ).trim()
 
-                    echo "Remote docker ps output:\n${output}"
-
-                    if (!output) {
-                        error("ERROR: No containers are running after deployment!")
-                    }
+                    echo "Container Status:\n${output}"
+                    if (!output) error("No containers running!")
                 }
             }
         }
@@ -128,10 +146,10 @@ pipeline {
 
     post {
         success {
-            echo "Deployment successful! Containers are running on ${params.TARGET_IP}"
+            echo "Deployment successful!"
         }
         failure {
-            echo "Deployment failed. Check logs above."
+            echo "Deployment failed!"
         }
     }
 }
