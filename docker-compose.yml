@@ -1,24 +1,38 @@
-version: "3.8"
+version: '3.9'
 
 services:
-  redis:
-    image: redis:latest
-    container_name: redis_server
-    ports:
-      - "6379:6379"
 
   postgres:
     image: postgres:latest
-    container_name: db_server
+    container_name: postgres_db
+    restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: espl@2017
-      POSTGRES_DB: postgres_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: appdb
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
-  registry:
+  redis:
+    image: redis:latest
+    container_name: redis_cache
+    restart: always
+    ports:
+      - "6379:6379"
+
+  private_registry:
     image: registry:2
     container_name: private_registry
+    restart: always
     ports:
       - "5000:5000"
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /data
+    volumes:
+      - registry_data:/data
+
+volumes:
+  postgres_data:
+  registry_data:
