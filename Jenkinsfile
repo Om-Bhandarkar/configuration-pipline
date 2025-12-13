@@ -3,7 +3,7 @@ pipeline {
 
     parameters {
         string(name: 'TARGET_IP', defaultValue: '', description: 'Remote machine IP')
-        string(name: 'SSH_USER', defaultValue: 'Administrator', description: 'SSH Username')
+        string(name: 'SSH_USER', defaultValue: 'om', description: 'SSH Username')
         password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file to deploy')
     }
@@ -50,27 +50,21 @@ pipeline {
             }
         }
 
-        stage('Install Docker & Compose (Linux only)') {
+        stage('Install Docker (Linux only)') {
             when { expression { env.REMOTE_OS == "LINUX" } }
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no ${params.SSH_USER}@${params.TARGET_IP} '
-                    # Install Docker if not present
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
                     if ! command -v docker >/dev/null 2>&1; then
                         echo "Installing Docker..."
                         curl -fsSL https://get.docker.com | sudo sh
                     fi
 
-                    # Install Docker Compose if not present
-                    if ! command -v docker-compose >/dev/null 2>&1; then
-                        echo "Installing docker-compose..."
-                        sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-\$(uname -s)-\$(uname -m)" \
-                        -o /usr/local/bin/docker-compose
-                        sudo chmod +x /usr/local/bin/docker-compose
-                    fi
+                    docker compose version
                 '
                 """
-                echo "Docker & docker-compose installed on Linux."
+                echo "Docker installed and docker compose v2 available."
             }
         }
 
@@ -78,7 +72,7 @@ pipeline {
             steps {
                 script {
                     def remotePath = (env.REMOTE_OS == "WINDOWS") ?
-                        "/Users/${params.SSH_USER}/docker-compose.yml" :
+                        "C:/Users/${params.SSH_USER}/docker-compose.yml" :
                         "~/docker-compose.yml"
 
                     sh """
@@ -99,11 +93,10 @@ pipeline {
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} powershell -Command "
                     cd C:/Users/${params.SSH_USER};
-                    if (!(docker compose)) { Write-Host 'Docker Desktop not installed!'; exit 1 }
                     docker compose up -d
                 "
                 """
-                echo "Windows deployment done using 'docker compose'"
+                echo "Windows deployment done using docker compose"
             }
         }
 
@@ -114,11 +107,11 @@ pipeline {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
-                    cd ~;
-                    docker-compose up -d --remove-orphans
+                    cd ~
+                    docker compose up -d --remove-orphans
                 '
                 """
-                echo "Linux deployment done using docker-compose"
+                echo "Linux deployment done using docker compose"
             }
         }
 
@@ -135,7 +128,7 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    echo "Container Status:\n${output}"
+                    echo "Container Status:\\n${output}"
                     if (!output) error("No containers running!")
                 }
             }
