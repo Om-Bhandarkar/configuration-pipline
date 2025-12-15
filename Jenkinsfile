@@ -40,18 +40,25 @@ pipeline {
                 script {
                     def os = sh(
                         script: """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} \
-                        "command -v powershell.exe >/dev/null 2>&1 && echo WINDOWS || echo LINUX"
+                        sshpass -p "$(printf '%s' '${params.SSH_PASS}')" ssh -o StrictHostKeyChecking=no \
+                        ${params.SSH_USER}@${params.TARGET_IP} '
+                            uname -s 2>/dev/null || echo WINDOWS
+                        '
                         """,
                         returnStdout: true
                     ).trim()
         
-                    env.REMOTE_OS = os
+                    if (os.contains("Linux")) {
+                        env.REMOTE_OS = "LINUX"
+                    } else {
+                        env.REMOTE_OS = "WINDOWS"
+                    }
+        
                     echo "✅ Detected OS: ${env.REMOTE_OS}"
                 }
             }
         }
+
 
 
         /* ===================== LINUX ===================== */
