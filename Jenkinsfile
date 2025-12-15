@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote machine IP')
+        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote Linux machine IP')
         string(name: 'SSH_USER', defaultValue: 'om', description: 'SSH Username')
         password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
-        string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file to deploy')
+        string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file')
     }
 
     stages {
@@ -13,96 +13,67 @@ pipeline {
         stage('Validate Inputs') {
             steps {
                 script {
-                    if (!params.TARGET_IP) error "IP address is required"
-                    if (!params.SSH_USER) error "Username is required"
-                    if (!params.SSH_PASS) error "Password is required"
-                    if (!fileExists(params.COMPOSE_FILE)) error "Compose file not found in workspace"
+                    if (!params.TARGET_IP) error "TARGET_IP is required"
+                    if (!params.SSH_USER) error "SSH_USER is required"
+                    if (!params.SSH_PASS) error "SSH_PASS is required"
+                    if (!fileExists(params.COMPOSE_FILE)) error "Compose file not found"
                 }
             }
         }
 
-        stage('SSH Connectivity Check') {
+        stage('SSH Check') {
             steps {
                 sh """
-                which sshpass >/dev/null 2>&1 || (echo 'ERROR: sshpass not installed on Jenkins agent!' && exit 2)
-
+                which sshpass >/dev/null || exit 2
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                    ${params.SSH_USER}@${params.TARGET_IP} 'echo SSH_OK'
+                ${params.SSH_USER}@${params.TARGET_IP} 'echo SSH_OK'
                 """
-                echo "SSH connection successful."
             }
         }
 
-        stage('Detect Remote OS') {
-            steps {
-                script {
-                    def os = sh(
-                        script: """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} 'uname -s' 2>/dev/null || echo WINDOWS
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    env.REMOTE_OS = os.contains("Linux") ? "LINUX" : "WINDOWS"
-                    echo "Remote OS detected: ${env.REMOTE_OS}"
-                }
-            }
-        }
-
-        stage('Install Docker (Linux only)') {
-            when { expression { env.REMOTE_OS == "LINUX" } }
+        stage('Ensure Docker & Compose (Linux)') {
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "Installing Docker..."
-                        curl -fsSL https://get.docker.com | sudo sh
-                    fi
 
-                    docker compose version
+                set -e
+
+                # Install Docker if missing
+                if ! command -v docker >/dev/null 2>&1; then
+                    echo "Installing Docker..."
+                    curl -fsSL https://get.docker.com | sudo sh
+                fi
+
+                # Enable & start Docker
+                sudo systemctl enable docker
+                sudo systemctl start docker
+
+                # Add user to docker group
+                sudo usermod -aG docker ${params.SSH_USER}
+
+                # Verify docker compose
+                if ! docker compose version >/dev/null 2>&1; then
+                    echo "Docker Compose v2 not available"
+                    exit 1
+                fi
+
+                echo "Docker & Compose ready"
                 '
                 """
-                echo "Docker installed and docker compose v2 available."
             }
         }
 
-        stage('Copy docker-compose.yml to Remote') {
-            steps {
-                script {
-                    def remotePath = (env.REMOTE_OS == "WINDOWS") ?
-                        "C:/Users/${params.SSH_USER}/docker-compose.yml" :
-                        "~/docker-compose.yml"
-
-                    sh """
-                    sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
-                        ${params.COMPOSE_FILE} ${params.SSH_USER}@${params.TARGET_IP}:${remotePath}
-                    """
-
-                    echo "Compose file copied to: ${remotePath}"
-                }
-            }
-        }
-
-        /* ---------------------- WINDOWS FLOW ------------------------ */
-        stage('Start Containers (Windows)') {
-            when { expression { env.REMOTE_OS == "WINDOWS" } }
+        stage('Copy Compose File') {
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} powershell -Command "
-                    cd C:/Users/${params.SSH_USER};
-                    docker compose up -d
-                "
+                sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
+                ${params.COMPOSE_FILE} ${params.SSH_USER}@${params.TARGET_IP}:~/docker-compose.yml
                 """
-                echo "Windows deployment done using docker compose"
             }
         }
 
-        /* ---------------------- LINUX FLOW ------------------------ */
-        stage('Start Containers (Linux)') {
-            when { expression { env.REMOTE_OS == "LINUX" } }
+        stage('Deploy Containers') {
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
@@ -111,36 +82,22 @@ pipeline {
                     docker compose up -d --remove-orphans
                 '
                 """
-                echo "Linux deployment done using docker compose"
             }
         }
 
-        stage('Verify Running Containers') {
+        stage('Verify Containers') {
             steps {
-                script {
-                    def cmd = "docker ps --format \\\"CONTAINER: {{.Names}} IMAGE: {{.Image}} STATUS: {{.Status}}\\\""
-
-                    def output = sh(
-                        script: """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} "${cmd}"
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Container Status:\\n${output}"
-                    if (!output) error("No containers running!")
-                }
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} \
+                "docker ps --format 'CONTAINER: {{.Names}} STATUS: {{.Status}}'"
+                """
             }
         }
     }
 
     post {
-        success {
-            echo "Deployment successful!"
-        }
-        failure {
-            echo "Deployment failed!"
-        }
+        success { echo "✅ Deployment successful on Linux" }
+        failure { echo "❌ Deployment failed" }
     }
 }
