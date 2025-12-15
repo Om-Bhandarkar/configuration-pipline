@@ -10,7 +10,7 @@ pipeline {
 
     stages {
 
-        stage('Validate Inputs') { 	
+        stage('Validate Inputs') {
             steps {
                 script {
                     if (!params.TARGET_IP) error "TARGET_IP is required"
@@ -31,34 +31,44 @@ pipeline {
             }
         }
 
+        /* ========= OS DETECTION (ADDED) ========= */
+        stage('Detect Remote OS') {
+            steps {
+                script {
+                    def os = sh(
+                        script: """
+                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                        ${params.SSH_USER}@${params.TARGET_IP} \
+                        "test -f /etc/os-release && echo LINUX || echo WINDOWS"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    env.REMOTE_OS = os
+                    echo "✅ Detected OS: ${env.REMOTE_OS}"
+                }
+            }
+        }
+        /* ======================================= */
+
         stage('Ensure Docker & Compose (Linux)') {
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
+                    set -e
 
-                set -e
+                    if ! command -v docker >/dev/null 2>&1; then
+                        echo "Installing Docker..."
+                        curl -fsSL https://get.docker.com | sudo sh
+                    fi
 
-                # Install Docker if missing
-                if ! command -v docker >/dev/null 2>&1; then
-                    echo "Installing Docker..."
-                    curl -fsSL https://get.docker.com | sudo sh
-                fi
+                    sudo systemctl enable docker
+                    sudo systemctl start docker
 
-                # Enable & start Docker
-                sudo systemctl enable docker
-                sudo systemctl start docker
+                    sudo usermod -aG docker ${params.SSH_USER}
 
-                # Add user to docker group
-                sudo usermod -aG docker ${params.SSH_USER}
-
-                # Verify docker compose
-                if ! docker compose version >/dev/null 2>&1; then
-                    echo "Docker Compose v2 not available"
-                    exit 1
-                fi
-
-                echo "Docker & Compose ready"
+                    docker compose version
                 '
                 """
             }
@@ -97,7 +107,7 @@ pipeline {
     }
 
     post {
-        success { echo "✅ Deployment successful on Linux" }
+        success { echo "✅ Deployment successful on ${env.REMOTE_OS}" }
         failure { echo "❌ Deployment failed" }
     }
 }
