@@ -1,7 +1,4 @@
-version: '3.9'
-
 services:
-
   postgres:
     image: postgres:latest
     container_name: postgres_db
@@ -10,17 +7,17 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: appdb
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
 
   redis:
     image: redis:latest
     container_name: redis_cache
     restart: always
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
 
   private_registry:
     image: registry:2
@@ -28,8 +25,6 @@ services:
     restart: always
     ports:
       - "5000:5000"
-    environment:
-      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /data
     volumes:
       - registry_data:/data
 
