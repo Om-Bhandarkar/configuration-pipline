@@ -41,22 +41,18 @@ pipeline {
                     def os = sh(
                         script: """
                         sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} '
-                            if command -v powershell.exe >/dev/null 2>&1; then
-                                echo WINDOWS
-                            else
-                                echo LINUX
-                            fi
-                        '
+                        ${params.SSH_USER}@${params.TARGET_IP} \
+                        "command -v powershell.exe >/dev/null 2>&1 && echo WINDOWS || echo LINUX"
                         """,
                         returnStdout: true
                     ).trim()
-
+        
                     env.REMOTE_OS = os
                     echo "✅ Detected OS: ${env.REMOTE_OS}"
                 }
             }
         }
+
 
         /* ===================== LINUX ===================== */
 
