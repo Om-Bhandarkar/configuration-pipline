@@ -1,10 +1,11 @@
+// WORKS ONLY FOR WINDOWS (Docker Desktop must be pre-installed)
 pipeline {
     agent any
 
     parameters {
-        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote Linux machine IP')
-        string(name: 'SSH_USER', defaultValue: 'om', description: 'SSH Username')
-        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
+        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote Windows machine IP')
+        string(name: 'SSH_USER', defaultValue: 'om', description: 'Windows Username')
+        password(name: 'SSH_PASS', defaultValue: '', description: 'Windows Password')
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file')
     }
 
@@ -26,12 +27,12 @@ pipeline {
                 sh """
                 which sshpass >/dev/null || exit 2
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} 'echo SSH_OK'
+                ${params.SSH_USER}@${params.TARGET_IP} "echo SSH_OK"
                 """
             }
         }
 
-        /* ========= OS DETECTION (ADDED) ========= */
+        /* ========= OS DETECTION ========= */
         stage('Detect Remote OS') {
             steps {
                 script {
@@ -44,32 +45,30 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
+                    if (os != "WINDOWS") {
+                        error "❌ This pipeline is only for WINDOWS"
+                    }
+
                     env.REMOTE_OS = os
                     echo "✅ Detected OS: ${env.REMOTE_OS}"
                 }
             }
         }
-        /* ======================================= */
+        /* ================================ */
 
-        stage('Ensure Docker & Compose (Linux)') {
+        stage('Verify Docker Desktop (Windows)') {
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} '
-                    set -e
+                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
+                powershell -Command "
+                    if (!(Get-Command docker -ErrorAction SilentlyContinue)) {
+                        Write-Error 'Docker Desktop not installed'
+                        exit 1
+                    }
 
-                    if ! command -v docker >/dev/null 2>&1; then
-                        echo "Installing Docker..."
-                        curl -fsSL https://get.docker.com | sudo sh
-                    fi
-
-                    sudo systemctl enable docker
-                    sudo systemctl start docker
-
-                    sudo usermod -aG docker ${params.SSH_USER}
-
+                    docker version
                     docker compose version
-                '
+                "
                 """
             }
         }
@@ -78,7 +77,8 @@ pipeline {
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
-                ${params.COMPOSE_FILE} ${params.SSH_USER}@${params.TARGET_IP}:~/docker-compose.yml
+                ${params.COMPOSE_FILE} \
+                ${params.SSH_USER}@${params.TARGET_IP}:C:/Users/${params.SSH_USER}/docker-compose.yml
                 """
             }
         }
@@ -86,11 +86,12 @@ pipeline {
         stage('Deploy Containers') {
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} '
-                    cd ~
-                    docker compose up -d --remove-orphans
-                '
+                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
+                powershell -Command "
+                    cd C:/Users/${params.SSH_USER}
+                    docker compose down --remove-orphans
+                    docker compose up -d
+                "
                 """
             }
         }
@@ -98,16 +99,21 @@ pipeline {
         stage('Verify Containers') {
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} \
-                "docker ps --format 'CONTAINER: {{.Names}} STATUS: {{.Status}}'"
+                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
+                powershell -Command "
+                    docker ps --format 'CONTAINER: {{.Names}} STATUS: {{.Status}}'
+                "
                 """
             }
         }
     }
 
     post {
-        success { echo "✅ Deployment successful on ${env.REMOTE_OS}" }
-        failure { echo "❌ Deployment failed" }
+        success {
+            echo "✅ Deployment successful on WINDOWS"
+        }
+        failure {
+            echo "❌ Deployment failed on WINDOWS"
+        }
     }
 }
