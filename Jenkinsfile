@@ -41,14 +41,12 @@ pipeline {
                     def os = sh(
                         script: """
                         sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} '
-                            uname -s 2>/dev/null || echo WINDOWS
-                        '
+                        ${params.SSH_USER}@${params.TARGET_IP} "uname" 2>/dev/null || echo WINDOWS
                         """,
                         returnStdout: true
                     ).trim()
         
-                    if (os.contains("Linux")) {
+                    if (os == "Linux") {
                         env.REMOTE_OS = "LINUX"
                     } else {
                         env.REMOTE_OS = "WINDOWS"
@@ -58,6 +56,7 @@ pipeline {
                 }
             }
         }
+
 
 
 
