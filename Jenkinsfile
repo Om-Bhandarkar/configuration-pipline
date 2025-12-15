@@ -35,12 +35,12 @@ pipeline {
             }
         }
 
-        stage('Detect Remote OS') {
+       stage('Detect Remote OS') {
             steps {
                 script {
                     def os = sh(
                         script: """
-                        sshpass -p "$(printf '%s' '${params.SSH_PASS}')" ssh -o StrictHostKeyChecking=no \
+                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} '
                             uname -s 2>/dev/null || echo WINDOWS
                         '
@@ -58,6 +58,7 @@ pipeline {
                 }
             }
         }
+
 
 
 
