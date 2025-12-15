@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote Linux machine IP')s
+        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote Linux machine IP')
         string(name: 'SSH_USER', defaultValue: 'om', description: 'SSH Username')
         password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file')
