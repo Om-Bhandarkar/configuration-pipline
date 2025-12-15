@@ -29,37 +29,36 @@ pipeline {
             steps {
                 sh """
                 which sshpass >/dev/null || (echo 'sshpass not installed on Jenkins' && exit 1)
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                sshpass -p '${params.SSH_PASS}' ssh -T -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} "echo SSH_OK"
                 """
             }
         }
 
-       stage('Detect Remote OS') {
+        /* ===================== OS DETECTION (FIXED) ===================== */
+
+        stage('Detect Remote OS') {
             steps {
                 script {
-                    def os = sh(
+                    def raw = sh(
                         script: """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} "uname" 2>/dev/null || echo WINDOWS
+                        sshpass -p '${params.SSH_PASS}' ssh -T -o StrictHostKeyChecking=no \
+                        ${params.SSH_USER}@${params.TARGET_IP} \
+                        "echo __OS__\$(uname 2>/dev/null || echo WINDOWS)__OS__"
                         """,
                         returnStdout: true
                     ).trim()
-        
-                    if (os == "Linux") {
+
+                    if (raw.contains("__OS__Linux__OS__")) {
                         env.REMOTE_OS = "LINUX"
                     } else {
                         env.REMOTE_OS = "WINDOWS"
                     }
-        
+
                     echo "✅ Detected OS: ${env.REMOTE_OS}"
                 }
             }
         }
-
-
-
-
 
         /* ===================== LINUX ===================== */
 
@@ -67,7 +66,7 @@ pipeline {
             when { expression { env.REMOTE_OS == 'LINUX' } }
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} '
+                sshpass -p '${params.SSH_PASS}' ssh -T ${params.SSH_USER}@${params.TARGET_IP} '
                     set -e
 
                     if ! command -v docker >/dev/null 2>&1; then
@@ -92,14 +91,14 @@ pipeline {
             when { expression { env.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -Command "
+                sshpass -p '${params.SSH_PASS}' ssh -T ${params.SSH_USER}@${params.TARGET_IP} \
+                powershell -Command "& {
                     if (!(Get-Command docker -ErrorAction SilentlyContinue)) {
                         Write-Error 'Docker Desktop not installed or not running'
                         exit 1
                     }
                     docker compose version
-                "
+                }"
                 """
             }
         }
@@ -126,7 +125,7 @@ pipeline {
                 script {
                     if (env.REMOTE_OS == 'LINUX') {
                         sh """
-                        sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} '
+                        sshpass -p '${params.SSH_PASS}' ssh -T ${params.SSH_USER}@${params.TARGET_IP} '
                             cd ~
                             docker compose down || true
                             docker compose up -d --remove-orphans
@@ -134,12 +133,12 @@ pipeline {
                         """
                     } else {
                         sh """
-                        sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                        powershell -Command "
+                        sshpass -p '${params.SSH_PASS}' ssh -T ${params.SSH_USER}@${params.TARGET_IP} \
+                        powershell -Command "& {
                             cd C:/Users/${params.SSH_USER}
                             docker compose down
                             docker compose up -d
-                        "
+                        }"
                         """
                     }
                 }
@@ -149,7 +148,7 @@ pipeline {
         stage('Verify Containers') {
             steps {
                 sh """
-                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
+                sshpass -p '${params.SSH_PASS}' ssh -T ${params.SSH_USER}@${params.TARGET_IP} \
                 "docker ps --format 'CONTAINER: {{.Names}} STATUS: {{.Status}}'"
                 """
             }
