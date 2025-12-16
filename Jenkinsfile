@@ -25,79 +25,58 @@ pipeline {
 
         stage('SSH Check') {
             steps {
-                sh """
+                sh '''
                 which sshpass >/dev/null || exit 2
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} "echo SSH_OK"
-                """
+                sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no \
+                ${SSH_USER}@${TARGET_IP} "echo SSH_OK"
+                '''
             }
         }
 
-        /* ========= OS DETECTION (WINDOWS EXPECTED) ========= */
         stage('Detect Remote OS') {
             steps {
-                script {
-                    def os = sh(
-                        script: """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} "ver"
-                        """,
-                        returnStdout: true
-                    ).trim()
-
-                    env.REMOTE_OS = "WINDOWS"
-                    echo "✅ Detected OS: WINDOWS"
-                }
+                sh '''
+                sshpass -p "${SSH_PASS}" ssh -o StrictHostKeyChecking=no \
+                ${SSH_USER}@${TARGET_IP} "ver"
+                '''
+                echo "✅ Detected OS: WINDOWS"
             }
         }
-        /* ================================================ */
 
         stage('Verify Docker Desktop (Windows)') {
             steps {
-                sh """
-                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "& {
-                    if (!(Get-Command docker -ErrorAction SilentlyContinue)) {
-                        Write-Error 'Docker Desktop not installed or not running'
-                        exit 1
-                    }
-                    docker compose version
-                }"
-                """
+                sh '''
+                sshpass -p "${SSH_PASS}" ssh ${SSH_USER}@${TARGET_IP} \
+                "powershell -NoProfile -Command \"if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Write-Error 'Docker Desktop not installed or not running'; exit 1 }; docker compose version\""
+                '''
             }
         }
 
         stage('Copy Compose File') {
             steps {
-                sh """
-                sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
-                ${params.COMPOSE_FILE} \
-                ${params.SSH_USER}@${params.TARGET_IP}:C:/Users/${params.SSH_USER}/docker-compose.yml
-                """
+                sh '''
+                sshpass -p "${SSH_PASS}" scp -o StrictHostKeyChecking=no \
+                ${COMPOSE_FILE} \
+                ${SSH_USER}@${TARGET_IP}:C:/Users/${SSH_USER}/docker-compose.yml
+                '''
             }
         }
 
         stage('Deploy Containers') {
             steps {
-                sh """
-                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "& {
-                    cd C:/Users/${params.SSH_USER}
-                    docker compose down --remove-orphans
-                    docker compose up -d
-                }"
-                """
+                sh '''
+                sshpass -p "${SSH_PASS}" ssh ${SSH_USER}@${TARGET_IP} \
+                "powershell -NoProfile -Command \"cd C:/Users/${SSH_USER}; docker compose down --remove-orphans; docker compose up -d\""
+                '''
             }
         }
 
         stage('Verify Containers') {
             steps {
-                sh """
-                sshpass -p '${params.SSH_PASS}' ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "& {
-                    docker ps
-                }"
-                """
+                sh '''
+                sshpass -p "${SSH_PASS}" ssh ${SSH_USER}@${TARGET_IP} \
+                "powershell -NoProfile -Command \"docker ps\""
+                '''
             }
         }
     }
