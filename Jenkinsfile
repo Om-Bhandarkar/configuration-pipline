@@ -133,16 +133,17 @@ pipeline {
                 expression { params.REMOTE_OS == 'WINDOWS' }
             }
             steps {
-                sh """
-                sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "
-                    cd C:/Users/${params.SSH_USER};
+                sh '''
+                sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
+                powershell -NoProfile -Command "& {
+                    cd C:/Users/${SSH_USER};
                     docker compose down --remove-orphans;
                     docker compose up -d
-                "
-                """
+                }"
+                '''
             }
         }
+
 
         stage('Verify Containers (Windows)') {
             when {
