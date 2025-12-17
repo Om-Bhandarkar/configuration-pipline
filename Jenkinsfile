@@ -153,7 +153,6 @@ pipeline {
                 """
             }
         }
-    }
 
     post {
         success {
