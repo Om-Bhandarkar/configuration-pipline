@@ -13,10 +13,6 @@ pipeline {
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file')
     }
 
-    environment {
-        REMOTE_OS = ''
-    }
-
     stages {
 
         stage('Validate Inputs') {
@@ -44,7 +40,7 @@ pipeline {
 
         stage('Ensure Docker & Compose (Linux)') {
             when {
-                expression { env.REMOTE_OS == 'LINUX' }
+                expression { params.REMOTE_OS == 'LINUX' }
             }
             steps {
                 sh """
@@ -66,7 +62,7 @@ pipeline {
 
         stage('Copy Compose File (Linux)') {
             when {
-                expression { env.REMOTE_OS == 'LINUX' }
+                expression { params.REMOTE_OS == 'LINUX' }
             }
             steps {
                 sh """
@@ -79,7 +75,7 @@ pipeline {
 
         stage('Deploy Containers (Linux)') {
             when {
-                expression { env.REMOTE_OS == 'LINUX' }
+                expression { params.REMOTE_OS == 'LINUX' }
             }
             steps {
                 sh """
@@ -94,7 +90,7 @@ pipeline {
 
         stage('Verify Containers (Linux)') {
             when {
-                expression { env.REMOTE_OS == 'LINUX' }
+                expression { params.REMOTE_OS == 'LINUX' }
             }
             steps {
                 sh """
@@ -109,7 +105,7 @@ pipeline {
 
         stage('Verify Docker Desktop (Windows)') {
             when {
-                expression { env.REMOTE_OS == 'WINDOWS' }
+                expression { params.REMOTE_OS == 'WINDOWS' }
             }
             steps {
                 sh """
@@ -121,7 +117,7 @@ pipeline {
 
         stage('Copy Compose File (Windows)') {
             when {
-                expression { env.REMOTE_OS == 'WINDOWS' }
+                expression { params.REMOTE_OS == 'WINDOWS' }
             }
             steps {
                 sh """
@@ -134,7 +130,7 @@ pipeline {
 
         stage('Deploy Containers (Windows)') {
             when {
-                expression { env.REMOTE_OS == 'WINDOWS' }
+                expression { params.REMOTE_OS == 'WINDOWS' }
             }
             steps {
                 sh """
@@ -150,7 +146,7 @@ pipeline {
 
         stage('Verify Containers (Windows)') {
             when {
-                expression { env.REMOTE_OS == 'WINDOWS' }
+                expression { params.REMOTE_OS == 'WINDOWS' }
             }
             steps {
                 sh """
@@ -163,7 +159,7 @@ pipeline {
 
     post {
         success {
-            echo "✅ Deployment successful on ${env.REMOTE_OS}"
+            echo "✅ Deployment successful on ${params.REMOTE_OS}"
         }
         failure {
             echo "❌ Deployment failed"
