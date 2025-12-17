@@ -6,10 +6,10 @@ pipeline {
             name: 'REMOTE_OS',
             choices: ['LINUX', 'WINDOWS'],
             description: 'Target machine operating system'
-        ),
+        )
         string(name: 'TARGET_IP', defaultValue: '', description: 'Remote machine IP')
         string(name: 'SSH_USER', defaultValue: 'om', description: 'SSH Username')
-        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password'),
+        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file')
     }
 
