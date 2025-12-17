@@ -42,7 +42,7 @@ pipeline {
                         script: """
                         sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} \
-                        "if [ -f /etc/os-release ]; then echo LINUX; else echo WINDOWS; fi"
+                        'if [ -f /etc/os-release ]; then echo LINUX; else echo WINDOWS; fi'
                         """,
                         returnStdout: true
                     ).trim()
@@ -52,6 +52,7 @@ pipeline {
                 }
             }
         }
+
 
         /* ===================== LINUX ===================== */
 
