@@ -1,13 +1,15 @@
-// Works ONLY for Windows (Docker Desktop + OpenSSH)
-
 pipeline {
     agent any
 
     parameters {
-        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote Windows machine IP')
-        string(name: 'SSH_USER', defaultValue: 'om', description: 'Windows SSH Username')
-        password(name: 'SSH_PASS', defaultValue: '', description: 'Windows SSH Password')
+        string(name: 'TARGET_IP', defaultValue: '', description: 'Remote machine IP')
+        string(name: 'SSH_USER', defaultValue: 'om', description: 'SSH Username')
+        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file')
+    }
+
+    environment {
+        REMOTE_OS = ''
     }
 
     stages {
@@ -27,23 +29,101 @@ pipeline {
             steps {
                 sh """
                 which sshpass >/dev/null || exit 2
-                sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} "echo SSH_OK"
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} 'echo SSH_OK'
                 """
             }
         }
 
         stage('Detect Remote OS') {
             steps {
-                sh """
-                sshpass -p "${params.SSH_PASS}" ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} "ver"
-                """
-                echo "✅ Detected OS: WINDOWS"
+                script {
+                    def os = sh(
+                        script: """
+                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                        ${params.SSH_USER}@${params.TARGET_IP} \
+                        "test -f /etc/os-release && echo LINUX || echo WINDOWS"
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    env.REMOTE_OS = os
+                    echo "✅ Detected OS: ${env.REMOTE_OS}"
+                }
             }
         }
 
+        /* ===================== LINUX ===================== */
+
+        stage('Ensure Docker & Compose (Linux)') {
+            when {
+                expression { env.REMOTE_OS == 'LINUX' }
+            }
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                    set -e
+                    if ! command -v docker >/dev/null 2>&1; then
+                        echo "Installing Docker..."
+                        curl -fsSL https://get.docker.com | sudo sh
+                    fi
+                    sudo systemctl enable docker
+                    sudo systemctl start docker
+                    sudo usermod -aG docker ${params.SSH_USER}
+                    docker compose version
+                '
+                """
+            }
+        }
+
+        stage('Copy Compose File (Linux)') {
+            when {
+                expression { env.REMOTE_OS == 'LINUX' }
+            }
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
+                ${params.COMPOSE_FILE} \
+                ${params.SSH_USER}@${params.TARGET_IP}:~/docker-compose.yml
+                """
+            }
+        }
+
+        stage('Deploy Containers (Linux)') {
+            when {
+                expression { env.REMOTE_OS == 'LINUX' }
+            }
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                    cd ~
+                    docker compose up -d --remove-orphans
+                '
+                """
+            }
+        }
+
+        stage('Verify Containers (Linux)') {
+            when {
+                expression { env.REMOTE_OS == 'LINUX' }
+            }
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} \
+                "docker ps --format 'CONTAINER: {{.Names}} STATUS: {{.Status}}'"
+                """
+            }
+        }
+
+        /* ===================== WINDOWS ===================== */
+
         stage('Verify Docker Desktop (Windows)') {
+            when {
+                expression { env.REMOTE_OS == 'WINDOWS' }
+            }
             steps {
                 sh """
                 sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
@@ -52,7 +132,10 @@ pipeline {
             }
         }
 
-        stage('Copy Compose File') {
+        stage('Copy Compose File (Windows)') {
+            when {
+                expression { env.REMOTE_OS == 'WINDOWS' }
+            }
             steps {
                 sh """
                 sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no \
@@ -62,16 +145,26 @@ pipeline {
             }
         }
 
-        stage('Deploy Containers') {
+        stage('Deploy Containers (Windows)') {
+            when {
+                expression { env.REMOTE_OS == 'WINDOWS' }
+            }
             steps {
                 sh """
                 sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "cd C:/Users/${params.SSH_USER}; docker compose down --remove-orphans; docker compose up -d"
+                powershell -NoProfile -Command "
+                    cd C:/Users/${params.SSH_USER};
+                    docker compose down --remove-orphans;
+                    docker compose up -d
+                "
                 """
             }
         }
 
-        stage('Verify Containers') {
+        stage('Verify Containers (Windows)') {
+            when {
+                expression { env.REMOTE_OS == 'WINDOWS' }
+            }
             steps {
                 sh """
                 sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
@@ -83,7 +176,7 @@ pipeline {
 
     post {
         success {
-            echo "✅ Deployment successful on WINDOWS"
+            echo "✅ Deployment successful on ${env.REMOTE_OS}"
         }
         failure {
             echo "❌ Deployment failed"
