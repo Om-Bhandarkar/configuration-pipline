@@ -42,11 +42,11 @@ pipeline {
                         script: """
                         sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                         ${params.SSH_USER}@${params.TARGET_IP} \
-                        "test -f /etc/os-release && echo LINUX || echo WINDOWS"
+                        "if [ -f /etc/os-release ]; then echo LINUX; else echo WINDOWS; fi"
                         """,
                         returnStdout: true
                     ).trim()
-
+        
                     env.REMOTE_OS = os
                     echo "✅ Detected OS: ${env.REMOTE_OS}"
                 }
