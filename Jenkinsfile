@@ -152,6 +152,8 @@ pipeline {
             }
         }
 
+    }   // ✅ THIS closes: stages {
+
     post {
         success {
             echo "✅ Deployment successful on ${params.REMOTE_OS}"
@@ -161,3 +163,4 @@ pipeline {
         }
     }
 }
+
