@@ -135,9 +135,8 @@ pipeline {
             steps {
                 sh '''
                 sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no ${SSH_USER}@${TARGET_IP} \
-                powershell -NoProfile -Command "& {
-                    cd C:/Users/${SSH_USER};
-                    docker compose down --remove-orphans;
+                powershell -NoProfile -WorkingDirectory C:/Users/${SSH_USER} -Command "& {
+                    docker compose down --remove-orphans
                     docker compose up -d
                 }"
                 '''
