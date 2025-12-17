@@ -139,8 +139,6 @@ pipeline {
                 """
             }
         }
-        }
-
 
         stage('Verify Containers (Windows)') {
             when {
