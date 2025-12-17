@@ -2,9 +2,14 @@ pipeline {
     agent any
 
     parameters {
+        choice(
+            name: 'REMOTE_OS',
+            choices: ['LINUX', 'WINDOWS'],
+            description: 'Target machine operating system'
+        ),
         string(name: 'TARGET_IP', defaultValue: '', description: 'Remote machine IP')
         string(name: 'SSH_USER', defaultValue: 'om', description: 'SSH Username')
-        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password')
+        password(name: 'SSH_PASS', defaultValue: '', description: 'SSH Password'),
         string(name: 'COMPOSE_FILE', defaultValue: 'docker-compose.yml', description: 'Compose file')
     }
 
@@ -34,25 +39,6 @@ pipeline {
                 """
             }
         }
-
-        stage('Detect Remote OS') {
-            steps {
-                script {
-                    def os = sh(
-                        script: """
-                        sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                        ${params.SSH_USER}@${params.TARGET_IP} \
-                        'if [ -f /etc/os-release ]; then echo LINUX; else echo WINDOWS; fi'
-                        """,
-                        returnStdout: true
-                    ).trim()
-        
-                    env.REMOTE_OS = os
-                    echo "✅ Detected OS: ${env.REMOTE_OS}"
-                }
-            }
-        }
-
 
         /* ===================== LINUX ===================== */
 
