@@ -142,18 +142,16 @@ pipeline {
 
 
 
-        stage('Verify Containers (Windows)') {
+        stage('Deploy Containers (Windows)') {
             when {
                 expression { params.REMOTE_OS == 'WINDOWS' }
             }
             steps {
-                sh """
-                sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "docker ps"
-                """
+                sh '''
+                sshpass -p "$SSH_PASS" ssh ${SSH_USER}@${TARGET_IP} "powershell -NoProfile -Command \"& { $env:DOCKER_CONFIG='C:/Users/${SSH_USER}/.docker-ci'; New-Item -ItemType Directory -Force $env:DOCKER_CONFIG | Out-Null; Set-Location C:/Users/${SSH_USER}; docker compose down --remove-orphans; docker compose up -d }\""
+                '''
             }
         }
-
     }   // ✅ THIS closes: stages {
 
     post {
