@@ -119,14 +119,15 @@ pipeline {
         stage('Deploy Containers (Windows)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
-                sh '''
-                ENCODED="JABlAG4AdgA6AEQATwBDAEsARQBSAF8AQwBPAE4ARgBJAEcAPQAiAEMAOgAvAFUAcwBlAHIAcwAvAGgAcAAvAC4AZABvAGMAawBlAHIALQBjAGkAIgA7ACAATgBlAHcALQBJAHQAZQBtACAALQBJAHQAZQBtAFQAeQBwAGUAIABEAGkAcgBlAGMAdABvAHIAeQAgAC0ARgBvAHIAYwBlACAAJABlAG4AdgA6AEQATwBDAEsARQBSAF8AQwBPAE4ARgBJAEcAIAB8ACAATwB1AHQALQBOAHUAbABsADsAIABTAGUAdAAtAEwAbwBjAGEAdABpAG8AbgAgAEMAOgAvAFUAcwBlAHIAcwAvAGgAcAA7ACAAZABvAGMAawBlAHIAIABjAG8AbQBwAG8AcwBlACAALQBmACAAQwA6AC8AVQBzAGUAcgBzAC8AaABwAC8AZABvAGMAawBlAHIALQBjAG8AbQBwAG8AcwBlAC4AeQBtAGwAIABkAG8AdwBuACAALQAtAHIAZQBtAG8AdgBlAC0AbwByAHAAaABhAG4AcwA7ACAAZABvAGMAawBlAHIAIABjAG8AbQBwAG8AcwBlACAALQBmACAAQwA6AC8AVQBzAGUAcgBzAC8AaABwAC8AZABvAGMAawBlAHIALQBjAG8AbQBwAG8AcwBlAC4AeQBtAGwAIAB1AHAAIAAtAGQ="
-                sshpass -p "$SSH_PASS" ssh ${SSH_USER}@${TARGET_IP} "powershell -NoProfile -EncodedCommand $ENCODED"
-                '''
+                sh """
+                sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
+                powershell -NoProfile -Command "
+                    cd C:/Users/${params.SSH_USER};
+                    docker compose up -d
+                "
+                """
             }
         }
-
-
     }
 
     post {
