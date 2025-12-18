@@ -127,21 +127,6 @@ pipeline {
                 """
             }
         }
-
-        stage('Deploy Containers (Windows)') {
-            when {
-                expression { params.REMOTE_OS == 'WINDOWS' }
-            }
-            steps {
-                sh '''
-                sshpass -p "$SSH_PASS" ssh ${SSH_USER}@${TARGET_IP} "powershell -NoProfile -Command \"setx DOCKER_CONFIG C:/Users/${SSH_USER}/.docker-ci; mkdir C:/Users/${SSH_USER}/.docker-ci -ErrorAction SilentlyContinue; cd C:/Users/${SSH_USER}; docker compose down --remove-orphans; docker compose up -d\""
-                '''
-            }
-        }
-
-
-
-
         stage('Deploy Containers (Windows)') {
             when {
                 expression { params.REMOTE_OS == 'WINDOWS' }
