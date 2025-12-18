@@ -115,17 +115,23 @@ pipeline {
             }
         }
 
-        /* 🔥 FIXED WINDOWS DEPLOY (EncodedCommand) */
+       
         stage('Deploy Containers (Windows)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
-                sh '''
-                PS_CMD='$env:DOCKER_CONFIG="C:/Users/${SSH_USER}/.docker-ci"; New-Item -ItemType Directory -Force $env:DOCKER_CONFIG | Out-Null; Set-Location C:/Users/${SSH_USER}; docker compose down --remove-orphans; docker compose up -d'
-                ENCODED=$(echo "$PS_CMD" | iconv -t UTF-16LE | base64 -w 0)
-                sshpass -p "$SSH_PASS" ssh ${SSH_USER}@${TARGET_IP} "powershell -NoProfile -EncodedCommand $ENCODED"
-                '''
+                sh """
+                PS_CMD=\$'\
+                \$env:DOCKER_CONFIG=\"C:/Users/${params.SSH_USER}/.docker-ci\"; \
+                New-Item -ItemType Directory -Force \$env:DOCKER_CONFIG | Out-Null; \
+                Set-Location C:/Users/${params.SSH_USER}; \
+                docker compose -f C:/Users/${params.SSH_USER}/docker-compose.yml down --remove-orphans; \
+                docker compose -f C:/Users/${params.SSH_USER}/docker-compose.yml up -d'
+                ENCODED=\$(echo \"\$PS_CMD\" | iconv -t UTF-16LE | base64 -w 0)
+                sshpass -p \"${params.SSH_PASS}\" ssh ${params.SSH_USER}@${params.TARGET_IP} \"powershell -NoProfile -EncodedCommand \$ENCODED\"
+                """
             }
         }
+
     }
 
     post {
