@@ -119,18 +119,13 @@ pipeline {
         stage('Deploy Containers (Windows)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
-                sh """
-                PS_CMD=\$'\
-                \$env:DOCKER_CONFIG=\"C:/Users/${params.SSH_USER}/.docker-ci\"; \
-                New-Item -ItemType Directory -Force \$env:DOCKER_CONFIG | Out-Null; \
-                Set-Location C:/Users/${params.SSH_USER}; \
-                docker compose -f C:/Users/${params.SSH_USER}/docker-compose.yml down --remove-orphans; \
-                docker compose -f C:/Users/${params.SSH_USER}/docker-compose.yml up -d'
-                ENCODED=\$(echo \"\$PS_CMD\" | iconv -t UTF-16LE | base64 -w 0)
-                sshpass -p \"${params.SSH_PASS}\" ssh ${params.SSH_USER}@${params.TARGET_IP} \"powershell -NoProfile -EncodedCommand \$ENCODED\"
-                """
+                sh '''
+                ENCODED="JABlAG4AdgA6AEQATwBDAEsARQBSAF8AQwBPAE4ARgBJAEcAPQAiAEMAOgAvAFUAcwBlAHIAcwAvAGgAcAAvAC4AZABvAGMAawBlAHIALQBjAGkAIgA7ACAATgBlAHcALQBJAHQAZQBtACAALQBJAHQAZQBtAFQAeQBwAGUAIABEAGkAcgBlAGMAdABvAHIAeQAgAC0ARgBvAHIAYwBlACAAJABlAG4AdgA6AEQATwBDAEsARQBSAF8AQwBPAE4ARgBJAEcAIAB8ACAATwB1AHQALQBOAHUAbABsADsAIABTAGUAdAAtAEwAbwBjAGEAdABpAG8AbgAgAEMAOgAvAFUAcwBlAHIAcwAvAGgAcAA7ACAAZABvAGMAawBlAHIAIABjAG8AbQBwAG8AcwBlACAALQBmACAAQwA6AC8AVQBzAGUAcgBzAC8AaABwAC8AZABvAGMAawBlAHIALQBjAG8AbQBwAG8AcwBlAC4AeQBtAGwAIABkAG8AdwBuACAALQAtAHIAZQBtAG8AdgBlAC0AbwByAHAAaABhAG4AcwA7ACAAZABvAGMAawBlAHIAIABjAG8AbQBwAG8AcwBlACAALQBmACAAQwA6AC8AVQBzAGUAcgBzAC8AaABwAC8AZABvAGMAawBlAHIALQBjAG8AbQBwAG8AcwBlAC4AeQBtAGwAIAB1AHAAIAAtAGQ="
+                sshpass -p "$SSH_PASS" ssh ${SSH_USER}@${TARGET_IP} "powershell -NoProfile -EncodedCommand $ENCODED"
+                '''
             }
         }
+
 
     }
 
