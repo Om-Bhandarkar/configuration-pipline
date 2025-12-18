@@ -121,10 +121,7 @@ pipeline {
             steps {
                 sh """
                 sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "
-                    cd C:/Users/${params.SSH_USER};
-                    docker compose up -d
-                "
+                powershell -NoProfile -Command "cd C:/Users/${params.SSH_USER}; docker compose up -d"
                 """
             }
         }
