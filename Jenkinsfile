@@ -39,16 +39,13 @@ pipeline {
         /* ===================== LINUX ===================== */
 
         stage('Ensure Docker & Compose (Linux)') {
-            when {
-                expression { params.REMOTE_OS == 'LINUX' }
-            }
+            when { expression { params.REMOTE_OS == 'LINUX' } }
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
                     set -e
                     if ! command -v docker >/dev/null 2>&1; then
-                        echo "Installing Docker..."
                         curl -fsSL https://get.docker.com | sudo sh
                     fi
                     sudo systemctl enable docker
@@ -61,9 +58,7 @@ pipeline {
         }
 
         stage('Copy Compose File (Linux)') {
-            when {
-                expression { params.REMOTE_OS == 'LINUX' }
-            }
+            when { expression { params.REMOTE_OS == 'LINUX' } }
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
@@ -74,9 +69,7 @@ pipeline {
         }
 
         stage('Deploy Containers (Linux)') {
-            when {
-                expression { params.REMOTE_OS == 'LINUX' }
-            }
+            when { expression { params.REMOTE_OS == 'LINUX' } }
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
@@ -89,14 +82,12 @@ pipeline {
         }
 
         stage('Verify Containers (Linux)') {
-            when {
-                expression { params.REMOTE_OS == 'LINUX' }
-            }
+            when { expression { params.REMOTE_OS == 'LINUX' } }
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} \
-                "docker ps --format 'CONTAINER: {{.Names}} STATUS: {{.Status}}'"
+                "docker ps"
                 """
             }
         }
@@ -104,9 +95,7 @@ pipeline {
         /* ===================== WINDOWS ===================== */
 
         stage('Verify Docker Desktop (Windows)') {
-            when {
-                expression { params.REMOTE_OS == 'WINDOWS' }
-            }
+            when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh """
                 sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
@@ -116,9 +105,7 @@ pipeline {
         }
 
         stage('Copy Compose File (Windows)') {
-            when {
-                expression { params.REMOTE_OS == 'WINDOWS' }
-            }
+            when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh """
                 sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no \
@@ -127,17 +114,19 @@ pipeline {
                 """
             }
         }
+
+        /* 🔥 FIXED WINDOWS DEPLOY (EncodedCommand) */
         stage('Deploy Containers (Windows)') {
-            when {
-                expression { params.REMOTE_OS == 'WINDOWS' }
-            }
+            when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh '''
-                sshpass -p "$SSH_PASS" ssh ${SSH_USER}@${TARGET_IP} "powershell -NoProfile -Command \"& { $env:DOCKER_CONFIG='C:/Users/${SSH_USER}/.docker-ci'; New-Item -ItemType Directory -Force $env:DOCKER_CONFIG | Out-Null; Set-Location C:/Users/${SSH_USER}; docker compose down --remove-orphans; docker compose up -d }\""
+                PS_CMD='$env:DOCKER_CONFIG="C:/Users/${SSH_USER}/.docker-ci"; New-Item -ItemType Directory -Force $env:DOCKER_CONFIG | Out-Null; Set-Location C:/Users/${SSH_USER}; docker compose down --remove-orphans; docker compose up -d'
+                ENCODED=$(echo "$PS_CMD" | iconv -t UTF-16LE | base64 -w 0)
+                sshpass -p "$SSH_PASS" ssh ${SSH_USER}@${TARGET_IP} "powershell -NoProfile -EncodedCommand $ENCODED"
                 '''
             }
         }
-    }   // ✅ THIS closes: stages {
+    }
 
     post {
         success {
@@ -148,4 +137,3 @@ pipeline {
         }
     }
 }
-
