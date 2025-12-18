@@ -92,36 +92,55 @@ pipeline {
             }
         }
 
-        /* ===================== WINDOWS ===================== */
+        /* ===================== WINDOWS (via WSL Docker) ===================== */
 
-        stage('Verify Docker Desktop (Windows)') {
+        stage('Verify Docker (Windows via WSL)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh """
-                sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "docker version && docker compose version"
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                    docker version
+                    docker compose version
+                '
                 """
             }
         }
-
-        stage('Copy Compose File (Windows)') {
+        
+        stage('Copy Compose File (Windows via WSL)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh """
-                sshpass -p "${params.SSH_PASS}" scp -o StrictHostKeyChecking=no \
+                sshpass -p '${params.SSH_PASS}' scp -o StrictHostKeyChecking=no \
                 ${params.COMPOSE_FILE} \
-                ${params.SSH_USER}@${params.TARGET_IP}:C:/Users/${params.SSH_USER}/docker-compose.yml
+                ${params.SSH_USER}@${params.TARGET_IP}:~/docker-compose.yml
                 """
             }
         }
-
-       
-        stage('Deploy Containers (Windows)') {
+        
+        stage('Deploy Containers (Windows via WSL)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh """
-                sshpass -p "${params.SSH_PASS}" ssh ${params.SSH_USER}@${params.TARGET_IP} \
-                powershell -NoProfile -Command "cd C:/Users/${params.SSH_USER}; docker compose up -d"
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                    cd ~
+                    docker compose down --remove-orphans
+                    docker compose pull
+                    docker compose up -d
+                '
+                """
+            }
+        }
+        
+        stage('Verify Containers (Windows via WSL)') {
+            when { expression { params.REMOTE_OS == 'WINDOWS' } }
+            steps {
+                sh """
+                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                    docker ps
+                '
                 """
             }
         }
