@@ -8,10 +8,11 @@ services:
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: appdb
     volumes:
-     - postgres_data:/var/lib/postgresql/data
-
+      - postgres_data:/var/lib/postgresql/data
+      - pgbackup:/backup
     expose:
       - "5432"
+
 
   redis:
     image: redis:latest
@@ -31,4 +32,5 @@ services:
 
 volumes:
   postgres_data:
+  pgbackup:
   registry_data:
