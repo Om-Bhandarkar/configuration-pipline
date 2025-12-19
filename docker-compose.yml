@@ -8,8 +8,7 @@ services:
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: appdb
     volumes:
-      - postgres_data_1: /var/lib/postgresql/
-      - postgres_data_2: /Documents/postgresql/
+      - postgres_data: /var/lib/postgresql/
     expose:
       - "5432"
 
@@ -31,6 +30,5 @@ services:
       - registry_data:/data
 
 volumes:
-  postgres_data_1:
-  postgres_data_2:
+  postgres_data:
   registry_data:
