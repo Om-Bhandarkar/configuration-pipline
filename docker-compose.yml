@@ -8,7 +8,8 @@ services:
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: appdb
     volumes:
-      - /Documents/postgresql:/var/lib/postgresql
+     - postgres_data:/var/lib/postgresql
+
     expose:
       - "5432"
 
