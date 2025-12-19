@@ -167,7 +167,7 @@ pipeline {
                 sh """
                 echo "💾 Starting Postgres backup"
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} '
+                ${params.SSH_USER}@${params.TARGET_IP}'
                     if docker ps --format "{{.Names}}" | grep -q postgres_db; then
                         FILE=/backup/appdb_\\\\$(date +%F_%H-%M).sql
                         docker exec postgres_db sh -c \
