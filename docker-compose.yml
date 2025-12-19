@@ -1,6 +1,8 @@
+version: "3.9"
+
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:15
     container_name: postgres_db
     restart: always
     environment:
@@ -9,16 +11,15 @@ services:
       POSTGRES_DB: appdb
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    expose:
-      - "5432"
-
+    ports:
+      - "5432:5432"
 
   redis:
-    image: redis:latest
+    image: redis:7
     container_name: redis_cache
     restart: always
-    expose:
-      - "6379"
+    ports:
+      - "6379:6379"
 
   private_registry:
     image: registry:2
@@ -27,7 +28,7 @@ services:
     ports:
       - "5001:5000"
     volumes:
-      - registry_data:/var/lib/registry   
+      - registry_data:/var/lib/registry
 
 volumes:
   postgres_data:
