@@ -68,28 +68,6 @@ pipeline {
             }
         }
 
-        /* ===================== BACKUP (MANDATORY) ===================== */
-
-        stage('Backup Postgres') {
-            steps {
-                sh """
-                sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} '
-                    mkdir -p ~/docker_backups/postgres
-
-                    if docker ps --format "{{.Names}}" | grep -q postgres_db; then
-                        echo "Taking Postgres backup..."
-                        docker exec postgres_db \
-                        pg_dump -U admin appdb \
-                        > ~/docker_backups/postgres/appdb_$(date +%F_%H-%M-%S).sql
-                    else
-                        echo "Postgres container not running, skipping backup"
-                    fi
-                '
-                """
-            }
-        }
-
         stage('Deploy Containers (Linux)') {
             when { expression { params.REMOTE_OS == 'LINUX' } }
             steps {
@@ -97,9 +75,7 @@ pipeline {
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
                     cd ~
-                    docker compose down --remove-orphans
-                    docker compose pull
-                    docker compose up -d
+                    docker compose up -d --remove-orphans
                 '
                 """
             }
@@ -110,12 +86,13 @@ pipeline {
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} "docker ps"
+                ${params.SSH_USER}@${params.TARGET_IP} \
+                "docker ps"
                 """
             }
         }
 
-        /* ===================== WINDOWS (WSL) ===================== */
+        /* ===================== WINDOWS (via WSL Docker) ===================== */
 
         stage('Verify Docker (Windows via WSL)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
@@ -129,7 +106,7 @@ pipeline {
                 """
             }
         }
-
+        
         stage('Copy Compose File (Windows via WSL)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
@@ -140,7 +117,7 @@ pipeline {
                 """
             }
         }
-
+        
         stage('Deploy Containers (Windows via WSL)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
@@ -155,13 +132,15 @@ pipeline {
                 """
             }
         }
-
+        
         stage('Verify Containers (Windows via WSL)') {
             when { expression { params.REMOTE_OS == 'WINDOWS' } }
             steps {
                 sh """
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${params.SSH_USER}@${params.TARGET_IP} "docker ps"
+                ${params.SSH_USER}@${params.TARGET_IP} '
+                    docker ps
+                '
                 """
             }
         }
