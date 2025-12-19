@@ -32,9 +32,9 @@ services:
 
 volumes:
   postgres_data:
-    name: postgres_data
+    name: om_postgres_data
     external: true
   registry_data:
-    name: registry_data
+    name: om_registry_data
     external: true
 
