@@ -166,8 +166,8 @@ pipeline {
             steps {
                 sh '''
                 echo "💾 Starting Postgres backup"
-                sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${SSH_USER}@${TARGET_IP} '
+                sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+                "$SSH_USER@$TARGET_IP" '
                     if docker ps --format "{{.Names}}" | grep -q postgres_db; then
                         FILE=/backup/appdb_$(date +%F_%H-%M).sql
                         docker exec postgres_db sh -c "pg_dump -U admin appdb > $FILE"
@@ -184,6 +184,7 @@ pipeline {
 
 
 
+
         /* ===================== RESTORE ===================== */
 
         stage('Postgres Restore (Manual)') {
@@ -191,8 +192,8 @@ pipeline {
             steps {
                 sh '''
                 echo "⚠️ RESTORE ENABLED — DATA WILL BE OVERWRITTEN"
-                sshpass -p '${SSH_PASS}' ssh -o StrictHostKeyChecking=no \
-                ${SSH_USER}@${TARGET_IP} '
+                sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+                "$SSH_USER@$TARGET_IP" '
                     set -e
                     BACKUP_FILE=$(docker exec postgres_db ls -t /backup/appdb_*.sql | head -n 1)
         
