@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:latest
+    image: postgres:16
     container_name: postgres_db
     restart: always
     environment:
@@ -8,12 +8,12 @@ services:
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: appdb
     volumes:
-      - /Documents/postgresql:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
     expose:
       - "5432"
 
   redis:
-    image: redis:latest
+    image: redis:7
     container_name: redis_cache
     restart: always
     expose:
