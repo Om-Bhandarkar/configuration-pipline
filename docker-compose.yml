@@ -31,6 +31,6 @@ services:
       - registry_data:/data
 
 volumes:
-  postgres_data1:
-  postgres_data2:
+  postgres_data_1:
+  postgres_data_2:
   registry_data:
