@@ -9,7 +9,6 @@ services:
       POSTGRES_DB: appdb
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - pgbackup:/backup
     expose:
       - "5432"
 
@@ -32,5 +31,4 @@ services:
 
 volumes:
   postgres_data:
-  pgbackup:
   registry_data:
