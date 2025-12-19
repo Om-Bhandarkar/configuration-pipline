@@ -169,11 +169,10 @@ pipeline {
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
                     if docker ps --format "{{.Names}}" | grep -q postgres_db; then
-                        BACKUP_DIR=/var/lib/docker/volumes/pgbackup/_data
-                        mkdir -p \$BACKUP_DIR
-                        FILE=\$BACKUP_DIR/appdb_\$(date +%F_%H-%M).sql
-                        docker exec postgres_db pg_dump -U admin appdb > \$FILE
-                        echo "✅ Backup created: \$FILE"
+                        FILE=/backup/appdb_$(date +%F_%H-%M).sql
+                        docker exec postgres_db sh -c \
+                          "pg_dump -U admin appdb > \$FILE"
+                        echo "✅ Backup created inside volume: \$FILE"
                     else
                         echo "⚠️ Postgres container not running, backup skipped"
                     fi
@@ -181,6 +180,7 @@ pipeline {
                 """
             }
         }
+
 
         /* ===================== RESTORE ===================== */
 
@@ -192,25 +192,27 @@ pipeline {
                 sshpass -p '${params.SSH_PASS}' ssh -o StrictHostKeyChecking=no \
                 ${params.SSH_USER}@${params.TARGET_IP} '
                     set -e
-                    BACKUP_FILE=\$(ls -t /var/lib/docker/volumes/pgbackup/_data/appdb_*.sql | head -n 1)
-
+                    BACKUP_FILE=\$(docker exec postgres_db ls -t /backup/appdb_*.sql | head -n 1)
+        
                     if [ -z "\$BACKUP_FILE" ]; then
                         echo "❌ No backup file found"
                         exit 1
                     fi
-
+        
                     echo "📂 Restoring from \$BACKUP_FILE"
-
+        
                     docker exec postgres_db psql -U admin -d appdb \
                       -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-
-                    docker exec -i postgres_db psql -U admin appdb < \$BACKUP_FILE
-
+        
+                    docker exec postgres_db sh -c \
+                      "psql -U admin appdb < \$BACKUP_FILE"
+        
                     echo "✅ Restore completed successfully"
                 '
                 """
             }
         }
+
     }
 
     post {
