@@ -34,3 +34,5 @@ volumes:
   postgres_data:
     name: postgres_data
   registry_data:
+    name: registry_data
+
