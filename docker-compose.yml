@@ -30,7 +30,5 @@ services:
 
 volumes:
   om_postgres_data:
-    external: true
 
   om_registry_data:
-    external: true
