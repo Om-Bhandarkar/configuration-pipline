@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:15
@@ -10,7 +8,7 @@ services:
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: appdb
     volumes:
-      - postgres_data:/var/lib/postgresql/_data/
+      - om_postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
 
@@ -28,13 +26,11 @@ services:
     ports:
       - "5001:5000"
     volumes:
-      - registry_data:/var/lib/registry
+      - om_registry_data:/var/lib/registry
 
 volumes:
-  postgres_data:
-    name: om_postgres_data
-    
-  registry_data:
-    name: om_registry_data
-  
+  om_postgres_data:
+    external: true
 
+  om_registry_data:
+    external: true
