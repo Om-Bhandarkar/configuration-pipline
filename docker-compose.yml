@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: admin123
       POSTGRES_DB: appdb
     volumes:
-      - postgres_data:/var/lib/postgresql/_data/
+      - postgres_data:/var/lib/postgresql/data/
     ports:
       - "5432:5432"
 
